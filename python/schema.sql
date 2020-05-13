@@ -14,5 +14,5 @@ CREATE TALBE weblog (
   INDEX (user),
   INDEX (referrer),
   INDEX (agent)
-)
+);
          
