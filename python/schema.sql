@@ -1,13 +1,13 @@
 ;; MySQL Schema
 
 CREATE TALBE weblog (
-  id int not null auto_increment,
-  ipaddr varchar(64) not null,
-  when datetime not null,
-  request varchar(255) not null,
-  user varchar(255),
-  referrer varchar(255),
-  agent varchar(255),
+  id INTEGER NOT NULL AUTO_INCREMENT,
+  ipaddr VARCHAR(64) NOT NULL,
+  when DATETIME NOT NULL,
+  request VARCHAR(255) NOT NULL,
+  user VARCHAR(255),
+  referrer VARCHAR(255),
+  agent VARCHAR(255),
   PRIMARY KEY (id),
   INDEX (ipaddr),
   INDEX (when),
