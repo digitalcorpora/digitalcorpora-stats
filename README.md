@@ -1,12 +1,12 @@
 # digitalcorpora-stats
 - Designing to parse Apache logfiles for digitalcorpora.org
 
-#Design
+# Design
 - Run as a daemon/system service so whenever a new log is created, it is automatically parsed, using something like a watch folder.
 - Options will be set using a config file
 - On initial run, user will specify config file using -c option followed by the path to the config file
 
-#Flow
+# Flow
 - Program is run and set as a system service, using config file
 - logfile name syntax and logfile syntax are specified in config file
 - Data is parsed and stored in MySQL database
