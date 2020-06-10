@@ -43,7 +43,18 @@ class Weblog(object):
         return None
         
 
-# test the parser
+# test parser.py
+def testcase1():
+   assert weblog('129.174.125.204 - - [09/Jun/2019:03:18:23 -0400] "GET /downloads/ HTTP/1.1" 200 3340 "-" "portscout/0.8.1"') == '129.174.125.204 - June 09 2019 - 3:18:23 - downloads/http/1.1'
+	pass
+():
+      def testcase2():
+         with pytest.raises(TypeError):
+       weblog('[06/Jul/2019:02:55:57 -0400] - - 10.173.0.42 - - "GET /netmri/config/userAdmin/login.tdf HTTP/1.1" 500 633')
+		pass
+	  
+	pass
+
 if __name__=="__main__":
    a = Weblog(data)
    print("url: %s  date: %s  time: %s  datetime: %s" % (a.url,a.date,a.time,a.datetime))
