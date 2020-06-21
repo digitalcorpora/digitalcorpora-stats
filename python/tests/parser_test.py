@@ -18,7 +18,7 @@ def test_line1():
     assert log.referrer == '-'
     assert log.agent == "Mozilla/5.0 (compatible; YandexBot/3.0; +http://yandex.com/bots)"
 
-    
+
 def test_line2():
     log = weblog.Weblog(LINE2)
     assert log.ipaddr == '129.174.125.204'
