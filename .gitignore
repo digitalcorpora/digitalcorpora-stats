@@ -1,2 +1,6 @@
 *~
 __pycache__
+.coverage
+coverage.xml
+python/.coverage
+python/coverage.xml

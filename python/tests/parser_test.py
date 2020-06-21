@@ -1,4 +1,4 @@
-import weblog
+from weblog import weblog
 
 LINE1 = '77.88.5.184 - - [21/Jun/2020:10:25:05 -0700] "GET / HTTP/1.1" 401 4110 "-" "Mozilla/5.0 (compatible; YandexBot/3.0; +http://yandex.com/bots)"'
 LINE2 = '129.174.125.204 - - [16/Jun/2019:05:18:15 -0400] "GET /downloads/tcpflow/ HTTP/1.1" 200 971 "-" "Anitya 0.15.1 at release-monitoring.org"'
