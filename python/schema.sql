@@ -9,7 +9,7 @@ CREATE TABLE downloadable (
         mtime DATETIME NOT NULL,
         tags JSON,
         primary key (id),
-        index (path,name),
+        unique index (path,name),
         index (name),
         index (size),
         index (mtime)
