@@ -3,10 +3,10 @@ import mysql.connector
 from datetime import date, datetime, timedelta
 import credlib
 test = mysql.connector.connect(
-	host=credlib.hostname,
-	user=credlib.username,
-	password=credlib.password,
-	database='test',)
+    host=credlib.hostname,
+    user=credlib.username,
+    password=credlib.password,
+    database='test',)
 testcursor = test.cursor()
 
 table_create = """CREATE TABLE testTable (
