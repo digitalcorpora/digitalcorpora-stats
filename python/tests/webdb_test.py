@@ -15,8 +15,8 @@ cursor = testdb.cursor
 
 # parse log
 parse_log = ("INSERT INTO testTable "
-            "(ipaddr, ident, user, datetime, request, result, size) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s)")
+             "(ipaddr, ident, user, datetime, request, result, size) "
+             "VALUES (%s, %s, %s, %s, %s, %s, %s)")
 
 # Ensure data is committed to database
 testdb.commit()
@@ -26,22 +26,22 @@ testdb.close()
 
 
 builder = SchemaBuilder()
-builder.add_schema({"type": "object", "properties":{}})
+builder.add_schema({"type": "object", "properties": {}})
 builder.add_object({"hi": "there"})
 builder.add_object({"hi": 5})
 
 builder.to_schema()
 {'$schema': "$linktoschema",
-"type": "object",
-"properties": {
-    "hi": {
-    "type": [
-    "integer",
-    "string"
-]
-}
-},
+ "type": "object",
+ "properties": {
+     "hi": {
+         "type": [
+            "integer",
+            "string"
+         ]
+     }
+ },
     "required": [
     "hi"
-]
-}
+ ]
+ }
