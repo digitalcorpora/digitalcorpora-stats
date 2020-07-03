@@ -1,12 +1,12 @@
 import weblog
 import mysql.connector
 from datetime import date, datetime, timedelta
-
+from genson import SchemaBuilder
 
 testdb = mysql.connector.connect(
-host="127.0.0.1",
-user="test",
-password="testtest123",
+    host="127.0.0.1",
+    user="test",
+    password="testtest123",
 )
 
 cursor = testdb.cursor
@@ -24,9 +24,9 @@ testdb.commit()
 # cursor.close()
 testdb.close()
 
-from genson import SchemaBuilder
+
 builder = SchemaBuilder()
-builder.add_schema({"type": "object", "properties": {}})
+builder.add_schema({"type": "object", "properties":{}})
 builder.add_object({"hi": "there"})
 builder.add_object({"hi": 5})
 
@@ -34,14 +34,14 @@ builder.to_schema()
 {'$schema': "$linktoschema",
 "type": "object",
 "properties": {
-"hi": {
-"type": [
-"integer",
-"string"
+    "hi": {
+    "type": [
+    "integer",
+    "string"
 ]
 }
 },
-"required": [
-"hi"
+    "required": [
+    "hi"
 ]
 }
