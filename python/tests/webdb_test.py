@@ -4,9 +4,10 @@ import pymysql
 # from genson import SchemaBuilder
 
 connection = pymysql.connect(
-    host='127.0.0.1',
-    user='test',
-    password='testtest123',
+    host=TMP_DBWRITER_HOSTNAME,
+    db=TMP_DBWRITER_DATABASE,
+    user=TMP_DBWRITER_USERNAME,
+    password=TMP_DBWRITER_PASSWORD,
     charset='utf8mb4',
     cursorclass=pymysql.cursors.DictCursor
 )
