@@ -1,5 +1,6 @@
 import weblog
 import pymysql
+import os
 # from datetime import date, datetime, timedelta
 # from genson import SchemaBuilder
 
