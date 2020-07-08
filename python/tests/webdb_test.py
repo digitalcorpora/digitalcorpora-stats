@@ -23,5 +23,3 @@ try:
 
 finally:
     connection.close()
-
-
