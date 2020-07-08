@@ -1,7 +1,7 @@
 import weblog
 import pymysql
-from datetime import date, datetime, timedelta
-from genson import SchemaBuilder
+# from datetime import date, datetime, timedelta
+# from genson import SchemaBuilder
 
 connection = pymysql.connect(
     host='127.0.0.1',
