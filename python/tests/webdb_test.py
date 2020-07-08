@@ -16,7 +16,8 @@ connection = pymysql.connect(
 try:
     with connection.cursor() as cursor:
         cursor.execute("CREATE TABLE 'testTable' (
-    `ipaddr` int(11) NOT NULL AUTO_INCREMENT,
+    `ipaddr` int(11) NOT NULL,
+    `id` int(11) NOT NULL AUTO_INCREMENT,
     `ident` varchar(255) COLLATE utf8_bin NOT NULL,
     `user` varchar(255) COLLATE utf8_bin NOT NULL,
     `datetime` datetime,
