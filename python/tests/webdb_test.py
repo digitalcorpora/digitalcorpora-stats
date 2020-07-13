@@ -17,7 +17,7 @@ try:
         sql = ("INSERT INTO testTable "
                "(ipaddr, ident, user, datetime, request, result, size) "
                "VALUES (%s, %s, %s, %s, %s, %s, %s)")
-        cursor.execute(sql, (weblog.Weblog))
+        cursor.execute(sql, (weblog.__init__))
         # Ensure data is committed to database
     connection.commit()
 
