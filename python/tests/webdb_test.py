@@ -1,7 +1,7 @@
 import weblog
 import pymysql
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 # from genson import SchemaBuilder
 
 connection = pymysql.connect(
@@ -15,11 +15,6 @@ connection = pymysql.connect(
 
 try:
     with connection.cursor() as cursor:
-        cursor.execute("CREATE TABLE 'testTable' (`ipaddr` int(11) NOT NULL AUTO_INCREMENT, `ident` varchar(255) COLLATE utf8_bin NOT NULL, `user` varchar(255) COLLATE utf8_bin NOT NULL, `datetime` datetime, `request` int(11) NOT NULL, `result` int(11) NOT NULL, `size` int(11) NOT NULL,
-                                                  PRIMARY KEY(`user`)
-                                                  ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_bin
-                       AUTO_INCREMENT=1
-                       )
         sql = ("INSERT INTO testTable "
                "(ipaddr, ident, user, datetime, request, result, size) "
                "VALUES (%s, %s, %s, %s, %s, %s, %s)")
