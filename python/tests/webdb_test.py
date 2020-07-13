@@ -1,7 +1,6 @@
 import weblog
 import pymysql
 import os
-from datetime import date, datetime
 # from genson import SchemaBuilder
 
 connection = pymysql.connect(
@@ -24,25 +23,3 @@ try:
 
 finally:
     connection.close()
-
-
-# builderA = SchemaBuilder()
-# builderA.add_schema({"type": "object", "properties": {}})
-# builderA.add_object({"hi": "there"})
-# builderA.add_object({"hi": 5})
-
-# builderA.to_schema()
-# {'$schema': "$linktoschema",
- # "type": "object",
- # "properties": {
-#     "hi": {
-    #     "type": [
-    #        "integer",
-    #        "string"
-    #     ]
-#     }
- # },
-#    "required": [
-#    "hi"
- # ]
- # }
