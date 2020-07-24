@@ -18,5 +18,4 @@ def send_schema(cursor):
         if len(statement ):
             cursor.execute(statement)
         
-
     

@@ -5,6 +5,7 @@ Make sure that the schema works.
 import pytest
 import pymysql
 import os
+import datetime
 
 MINIMUM_MYSQL_VERSION = '5.7'
 
@@ -31,7 +32,7 @@ def test_version(db_connection):
     assert rows[0][0] >= MINIMUM_MYSQL_VERSION
 
 def test_schema():
-    """Tests to make sure that the schema function works"""
+    """Tests to make sure that the get_schema function works"""
     from weblog.schema import get_schema
     assert "CREATE TABLE" in get_schema()
 
