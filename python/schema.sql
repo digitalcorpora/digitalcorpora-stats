@@ -1,4 +1,4 @@
-;; MySQL Schema for weblog
+SET FOREIGN_KEY_CHECKS=0;
 
 DROP TABLE IF EXISTS downloadable;
 CREATE TABLE downloadable (
@@ -53,3 +53,5 @@ CREATE TABLE logfile (
 );
 
         
+SET FOREIGN_KEY_CHECKS=1;
+
