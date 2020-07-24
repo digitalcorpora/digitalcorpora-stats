@@ -2,8 +2,6 @@
 """
 Make sure that the schema works.
 """
-
-
 import pytest
 import pymysql
 import os
@@ -25,8 +23,28 @@ def db_connection():
 
 
 def test_version(db_connection):
+    """This tests verifies that MySQL has the minimum schema"""
     cursor = db_connection.cursor()
     cursor.execute('SELECT version();')
     rows = cursor.fetchall()
     assert len(rows) == 1
     assert rows[0][0] >= MINIMUM_MYSQL_VERSION
+
+def test_schema():
+    """Tests to make sure that the schema function works"""
+    from weblog.schema import get_schema
+    assert "CREATE TABLE" in get_schema()
+
+def test_send_schema(db_connection):
+    """This tests verifies that the schema is correctMySQL has the minimum schema"""
+    from weblog.schema import send_schema
+    cursor = db_connection.cursor()
+    send_schema(cursor)
+
+    # and verify that that each of the tables now have 0 entries
+    for table in ['downloadable','download','tags','logfile']:
+        cursor.execute(f"SELECT count(*) from {table}")
+        rows = cursor.fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == 0
+    
