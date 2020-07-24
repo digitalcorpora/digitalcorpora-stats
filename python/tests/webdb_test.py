@@ -1,25 +1,30 @@
-import weblog
-import pymysql
+import sys
 import os
+import pymysql
+import pytest
+
+import weblog
+import datetime
 # from genson import SchemaBuilder
 
-connection = pymysql.connect(
-    host=os.environ['TMP_DBWRITER_HOSTNAME'],
-    database=os.environ['TMP_DBWRITER_DATABASE'],
-    user=os.environ['TMP_DBWRITER_USERNAME'],
-    password=os.environ['TMP_DBWRITER_PASSWORD'],
-    charset='utf8mb4',
-    cursorclass=pymysql.cursors.DictCursor
-)
+@pytest.fixture
+def db_connection():
+    conn = pymysql.connect(host=os.environ['TMP_DBWRITER_HOSTNAME'],
+                           database=os.environ['TMP_DBWRITER_DATABASE'],
+                           user=os.environ['TMP_DBWRITER_USERNAME'],
+                           password=os.environ['TMP_DBWRITER_PASSWORD'])
+    yield conn
+    conn.close()
 
-try:
-    with connection.cursor() as cursor:
-        sql = ("INSERT INTO testTable "
-               "(ipaddr, ident, user, datetime, request, result, size) "
-               "VALUES (%s, %s, %s, %s, %s, %s, %s)")
-        cursor.execute(sql, (weblog.__init__))
-        # Ensure data is committed to database
-    connection.commit()
+def test_insert(db_connection):
+    cursor = db_connection.cursor() 
 
-finally:
-    connection.close()
+    # First send the schema
+
+    sql = """
+    INSERT INTO testTable (ipaddr, ident, user, datetime, request, result, size) VALUES (%s, %s, %s, %s, %s, %s, %s)
+    """
+    cursor.execute(sql, ("1.1.1.1","test-ident", "test-user", datetime.datetime.now(), "request-1", 400, 10))
+    # Ensure data is committed to database
+    db_connection.commit()
+    db_connection.close()
