@@ -5,7 +5,6 @@ Make sure that the schema works.
 import pytest
 import pymysql
 import os
-import datetime
 
 MINIMUM_MYSQL_VERSION = '5.7'
 
@@ -31,10 +30,12 @@ def test_version(db_connection):
     assert len(rows) == 1
     assert rows[0][0] >= MINIMUM_MYSQL_VERSION
 
+
 def test_schema():
     """Tests to make sure that the get_schema function works"""
     from weblog.schema import get_schema
     assert "CREATE TABLE" in get_schema()
+
 
 def test_send_schema(db_connection):
     """This tests verifies that the schema is correctMySQL has the minimum schema"""
@@ -43,9 +44,8 @@ def test_send_schema(db_connection):
     send_schema(cursor)
 
     # and verify that that each of the tables now have 0 entries
-    for table in ['downloadable','download','tags','logfile']:
+    for table in ['downloadable', 'download', 'tags', 'logfile']:
         cursor.execute(f"SELECT count(*) from {table}")
         rows = cursor.fetchall()
         assert len(rows) == 1
         assert rows[0][0] == 0
-    

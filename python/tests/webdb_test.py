@@ -1,14 +1,11 @@
-import sys
 import os
 import pymysql
 import pytest
 
-import weblog
-import datetime
-
 #
 # this test takes a sample weblog, parses it and writes to the databse
 #
+
 
 @pytest.fixture
 def db_connection():
@@ -18,4 +15,3 @@ def db_connection():
                            password=os.environ['TMP_DBWRITER_PASSWORD'])
     yield conn
     conn.close()
-
