@@ -1,4 +1,4 @@
-from weblog import weblog
+from weblog.weblog import Weblog
 
 LINE1 = '77.88.5.184 - - [21/Jun/2020:10:25:05 -0700] "GET / HTTP/1.1" 401 4110 "-" "Mozilla/5.0 (compatible; YandexBot/3.0; +http://yandex.com/bots)"'
 LINE2 = '129.174.125.204 - - [16/Jun/2019:05:18:15 -0400] "GET /downloads/tcpflow/ HTTP/1.1" 200 971 "-" "Anitya 0.15.1 at release-monitoring.org"'
@@ -6,7 +6,7 @@ LINE3 = '129.174.125.204 - - [16/Jun/2019:09:06:56 -0400] "GET /corpora/scenario
 
 
 def test_line1():
-    log = weblog.Weblog(LINE1)
+    log = Weblog(LINE1)
     assert log.ipaddr == '77.88.5.184'
     assert log.datetime.year == 2020
     assert log.datetime.month == 6
@@ -20,7 +20,7 @@ def test_line1():
 
 
 def test_line2():
-    log = weblog.Weblog(LINE2)
+    log = Weblog(LINE2)
     assert log.ipaddr == '129.174.125.204'
     assert log.datetime.year == 2019
     assert log.datetime.month == 6
@@ -34,7 +34,7 @@ def test_line2():
 
 
 def test_line3():
-    log = weblog.Weblog(LINE3)
+    log = Weblog(LINE3)
     assert log.ipaddr == '129.174.125.204'
     assert log.datetime.year == 2019
     assert log.datetime.month == 6
