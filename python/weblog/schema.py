@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-Routines for managing the databse schema. 
-- getting the schema file 
+Routines for managing the databse schema.
+- getting the schema file
 - sending it into the datase
 - sending a weblog object into the database in a single transaction.
 """
@@ -25,6 +25,6 @@ def send_schema(cursor):
         if len(statement):
             cursor.execute(statement)
 
+
 def send_weblog(cursor, obj):
     assert isinstance(obj, weblog.Weblog)
-    

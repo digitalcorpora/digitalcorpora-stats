@@ -50,4 +50,8 @@ def test_send_schema(db_connection):
         assert len(rows) == 1
         assert rows[0][0] == 0
 
-        
+
+def test_weblog(db_connection):
+    from weblog.schema import send_schema
+    cursor = db_connection.cursor()
+    send_schema(cursor)

@@ -34,11 +34,11 @@ class Weblog(object):
         self.size      = int(m.group(7))
         try:
             self.referrer  = m.group(8)[2:-1]  # remove the space and quotes
-        except (IndexError,TypeError):
+        except (IndexError, TypeError):
             self.referrer  = None
         try:
             self.agent     = m.group(9)[2:-1]  # remove the quotes
-        except (IndexError,TypeError):
+        except (IndexError, TypeError):
             self.agent    = None
 
         # Now compute the derrived fields
