@@ -49,3 +49,5 @@ def test_send_schema(db_connection):
         rows = cursor.fetchall()
         assert len(rows) == 1
         assert rows[0][0] == 0
+
+        

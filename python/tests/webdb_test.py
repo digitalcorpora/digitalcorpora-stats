@@ -6,12 +6,12 @@ import pytest
 # this test takes a sample weblog, parses it and writes to the databse
 #
 
+from tests.schema_test import db_connection
+import tests.weblog_test as weblog_test
 
-@pytest.fixture
-def db_connection():
-    conn = pymysql.connect(host=os.environ['TMP_DBWRITER_HOSTNAME'],
-                           database=os.environ['TMP_DBWRITER_DATABASE'],
-                           user=os.environ['TMP_DBWRITER_USERNAME'],
-                           password=os.environ['TMP_DBWRITER_PASSWORD'])
-    yield conn
-    conn.close()
+def test_weblog(db_connection):
+    from weblog.schema import send_schema
+    cursor = db_connection.cursor()
+    send_schema(cursor)
+
+    # 

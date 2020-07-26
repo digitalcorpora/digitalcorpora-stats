@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# Return the schema in ../schema.sql
+"""
+Routines for managing the databse schema. 
+- getting the schema file 
+- sending it into the datase
+- sending a weblog object into the database in a single transaction.
+"""
 
 import os
+import weblog
 
 SCHEMA_FILE = "../schema.sql"
 
@@ -18,3 +24,7 @@ def send_schema(cursor):
         statement = statement.strip()
         if len(statement):
             cursor.execute(statement)
+
+def send_weblog(cursor, obj):
+    assert isinstance(obj, weblog.Weblog)
+    

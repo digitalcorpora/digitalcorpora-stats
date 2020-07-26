@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""
+The Weblog object parses a log line and returns the weblog object.
+"""
+
 import re
 import dateutil.parser
 
@@ -14,6 +18,7 @@ class Weblog(object):
     CLF_REGEX  = r'([(\d\.)]+) ([^ ]+) ([^ ]+) \[(.*)\] "(.*)" (\d+) (\d+)( "[^"]*")?( "[^"]*")?'
     CLF_RE     = re.compile(CLF_REGEX)
     WIKIPAGE_PATS = [re.compile(x) for x in [r"index.php\?title=([^ &]*)", "/wiki/([^ &]*)"]]
+    DL_PAT     = re.compile(r"(.*)[.](gz|E\d\d|csv|dd|raw|iso)$", re.I)
 
     def __init__(self, line):
         """Parse a line."""
@@ -29,11 +34,11 @@ class Weblog(object):
         self.size      = int(m.group(7))
         try:
             self.referrer  = m.group(8)[2:-1]  # remove the space and quotes
-        except IndexError:
+        except (IndexError,TypeError):
             self.referrer  = None
         try:
             self.agent     = m.group(9)[2:-1]  # remove the quotes
-        except IndexError:
+        except (IndexError,TypeError):
             self.agent    = None
 
         # Now compute the derrived fields
@@ -51,3 +56,8 @@ class Weblog(object):
             if m:
                 return m.group(1)
         return None
+
+    def is_download(self):
+        """Returns true if the weblog represents a download"""
+        m = self.DL_PAT.search(self.url)
+        return m is not None
