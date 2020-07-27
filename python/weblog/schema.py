@@ -33,7 +33,7 @@ def send_weblog(cursor, obj):
         path = obj.path
         dirname  = os.path.dirname(path)
         basename = os.path.basename(path)
-        cursor.execute("INSERT IGNORE INTO downloadable (dirname,basename,size) VALUES (%s,%s,%s)",
+        cursor.execute("INSERT INTO downloadable (dirname,basename,size) VALUES (%s,%s,%s) ON DUPLICATE KEY UPDATE size=size",
                        (dirname, os.path.basename(path), obj.size))
         cursor.execute("COMMIT")
         cursor.execute("INSERT INTO downloads (did, ipaddr, dtime, request, user, referrer, agent) VALUES ((select id from downloadable where dirname=%s and basename=%s),%s,%s,%s,%s,%s,%s)",

@@ -67,4 +67,4 @@ def test_line4():
 
 def test_extra():
     log6 = Weblog(LINE6)
-    
+    assert log6.is_download() is False

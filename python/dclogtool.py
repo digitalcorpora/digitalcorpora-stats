@@ -9,7 +9,8 @@ import pymysql
 import weblog.schema
 import weblog.weblog
 
-def import_logfile(logfile):
+
+def import_logfile(logfile, wipe=False):
     conn = pymysql.connect(host=os.environ['DBWRITER_HOSTNAME'],
                            database=os.environ['DBWRITER_DATABASE'],
                            user=os.environ['DBWRITER_USERNAME'],
@@ -20,6 +21,8 @@ def import_logfile(logfile):
     try:
         cursor.execute("SELECT count(*) from downloads")
     except pymysql.err.ProgrammingError:
+        wipe = True
+    if wipe:
         weblog.schema.send_schema(cursor)
     with open(logfile) as f:
         for line in f:
@@ -27,10 +30,11 @@ def import_logfile(logfile):
             weblog.schema.send_weblog(cursor, obj)
     
 
-if __name__=="__main__":
+if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Import the Digital Corpora logs.',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--wipe", help="Wipe database", action='store_true')
     parser.add_argument("logfile", help="Log file to import")
     args = parser.parse_args()
-    import_logfile(args.logfile)
+    import_logfile(args.logfile, wipe=args.wipe)

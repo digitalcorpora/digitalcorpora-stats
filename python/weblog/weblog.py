@@ -68,5 +68,7 @@ class Weblog(object):
 
     def is_download(self):
         """Returns true if the weblog represents a download"""
+        if self.url is None:
+            return False
         m = self.DL_PAT.search(self.url)
         return m is not None
