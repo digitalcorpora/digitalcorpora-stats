@@ -16,7 +16,7 @@ class Weblog(object):
     """
     __slots__  = ['ipaddr', 'ident', 'user', 'dtime', 'request', 'result',
                   'size', 'agent', 'referrer', 'method', 'url']
-    CLF_REGEX  = r'([(\d\.)]+) ([^ ]+) ([^ ]+) \[(.*)\] "(.*)" (\d+) (\d+|-)( "[^"]*")?( "[^"]*")?'
+    CLF_REGEX  = r'([(\d\.):]+) ([^ ]+) ([^ ]+) \[(.*)\] "(.*)" (\d+) (\d+|-)( "[^"]*")?( "[^"]*")?'
     CLF_RE     = re.compile(CLF_REGEX)
     WIKIPAGE_PATS = [re.compile(x) for x in [r"index.php\?title=([^ &]*)", "/wiki/([^ &]*)"]]
     DL_PAT     = re.compile(r"(.*)[.](gz|E\d\d|csv|dd|raw|iso)$", re.I)
