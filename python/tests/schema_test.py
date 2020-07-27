@@ -6,6 +6,8 @@ import pytest
 import pymysql
 import os
 
+from weblog.weblog import Weblog
+
 MINIMUM_MYSQL_VERSION = '5.7'
 
 # For info on fixtures, see:
@@ -52,6 +54,18 @@ def test_send_schema(db_connection):
 
 
 def test_weblog(db_connection):
-    from weblog.schema import send_schema
+    from weblog.schema import send_schema, send_weblog
+    from tests.weblog_test import LINE4
     cursor = db_connection.cursor()
     send_schema(cursor)
+    log4 = Weblog(LINE4)
+    send_weblog(cursor, log4)
+    cursor.execute("SELECT count(*) from downloadable")
+    rows = cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == 1
+
+    cursor.execute("SELECT count(*) from downloads")
+    rows = cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == 1

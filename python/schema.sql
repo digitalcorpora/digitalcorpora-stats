@@ -4,13 +4,13 @@ DROP TABLE IF EXISTS downloadable;
 CREATE TABLE downloadable (
         id INTEGER NOT NULL AUTO_INCREMENT,
         dirname VARCHAR(255) NOT NULL,
-        name VARCHAR(255) NOT NULL,
+        basename VARCHAR(255) NOT NULL,
         size INTEGER NOT NULL,
         mtime DATETIME,
         tags JSON,
         primary key (id),
-        unique index (dirname,name),
-        index (name),
+        unique index (dirname,basename),
+        index (basename),
         index (size),
         index (mtime)
         );

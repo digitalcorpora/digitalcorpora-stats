@@ -14,7 +14,7 @@ class Weblog(object):
     """Class that parses an Apache Combined Log File format file and returns tuple.
     See https://httpd.apache.org/docs/2.4/logs.html for log file format
     """
-    __slots__  = ['ipaddr', 'ident', 'user', 'datetime', 'request', 'result',
+    __slots__  = ['ipaddr', 'ident', 'user', 'dtime', 'request', 'result',
                   'size', 'agent', 'referrer', 'method', 'url']
     CLF_REGEX  = r'([(\d\.)]+) ([^ ]+) ([^ ]+) \[(.*)\] "(.*)" (\d+) (\d+)( "[^"]*")?( "[^"]*")?'
     CLF_RE     = re.compile(CLF_REGEX)
@@ -29,7 +29,7 @@ class Weblog(object):
         self.ipaddr    = m.group(1)
         self.ident     = m.group(2)
         self.user      = m.group(3)
-        self.datetime  = dateutil.parser.parse(m.group(4).replace(':', ' ', 1))
+        self.dtime  = dateutil.parser.parse(m.group(4).replace(':', ' ', 1))
         self.request   = m.group(5)
         self.result    = int(m.group(6))
         self.size      = int(m.group(7))
@@ -58,6 +58,7 @@ class Weblog(object):
                 return m.group(1)
         return None
 
+    @property
     def path(self):
         o = urlparse(self.url)
         return o.path

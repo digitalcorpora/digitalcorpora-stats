@@ -14,9 +14,9 @@ LINE5 = '129.174.125.204 - - [16/Jun/2019:09:06:56 -0400] "GET /corpora/drives/n
 def test_line1():
     log = Weblog(LINE1)
     assert log.ipaddr == '77.88.5.184'
-    assert log.datetime.year == 2020
-    assert log.datetime.month == 6
-    assert log.datetime.day == 21
+    assert log.dtime.year == 2020
+    assert log.dtime.month == 6
+    assert log.dtime.day == 21
     assert log.method == 'GET'
     assert log.url == '/'
     assert log.result == 401
@@ -29,9 +29,9 @@ def test_line1():
 def test_line2():
     log = Weblog(LINE2)
     assert log.ipaddr == '129.174.125.204'
-    assert log.datetime.year == 2019
-    assert log.datetime.month == 6
-    assert log.datetime.day == 16
+    assert log.dtime.year == 2019
+    assert log.dtime.month == 6
+    assert log.dtime.day == 16
     assert log.method == 'GET'
     assert log.url == '/downloads/tcpflow/'
     assert log.result == 200
@@ -44,9 +44,9 @@ def test_line2():
 def test_line3():
     log = Weblog(LINE3)
     assert log.ipaddr == '129.174.125.204'
-    assert log.datetime.year == 2019
-    assert log.datetime.month == 6
-    assert log.datetime.day == 16
+    assert log.dtime.year == 2019
+    assert log.dtime.month == 6
+    assert log.dtime.day == 16
     assert log.method == 'GET'
     assert log.url == '/corpora/scenarios/2009-m57-patents/'
     assert log.result == 200
@@ -59,7 +59,7 @@ def test_line3():
 def test_line4():
     log4 = Weblog(LINE4)
     assert log4.is_download()
-    assert log4.path() == '/downloads/tcpflow/tcpflow-1.5.0.tar.gz'
+    assert log4.path == '/downloads/tcpflow/tcpflow-1.5.0.tar.gz'
 
     log5 = Weblog(LINE5)
     assert log5.is_download()
