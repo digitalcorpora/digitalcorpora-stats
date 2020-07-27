@@ -28,3 +28,8 @@ def send_schema(cursor):
 
 def send_weblog(cursor, obj):
     assert isinstance(obj, weblog.Weblog)
+    """ If this is a downloadable request, make sure that the download exists in the dowloadable table, then add it to the download downloads table"""
+    if obj.is_download():
+        path = obj.path()
+        cursor.execute("insert ignore into downloadable (path,name,size) values (%s,%s,%s)",
+                       (os.path.dirname(path), os.path.basename(path), obj.size()))

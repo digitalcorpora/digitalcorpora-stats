@@ -57,6 +57,9 @@ def test_line3():
 
 
 def test_line4():
-    for dl in [LINE4, LINE5]:
-        log = Weblog(dl)
-        assert log.is_download() is True
+    log4 = Weblog(LINE4)
+    assert log4.is_download()
+    assert log4.path() == '/downloads/tcpflow/tcpflow-1.5.0.tar.gz'
+
+    log5 = Weblog(LINE5)
+    assert log5.is_download()

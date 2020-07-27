@@ -44,7 +44,7 @@ def test_send_schema(db_connection):
     send_schema(cursor)
 
     # and verify that that each of the tables now have 0 entries
-    for table in ['downloadable', 'download', 'tags', 'logfile']:
+    for table in ['downloadable', 'downloads', 'tags', 'logfile']:
         cursor.execute(f"SELECT count(*) from {table}")
         rows = cursor.fetchall()
         assert len(rows) == 1

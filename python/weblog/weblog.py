@@ -7,6 +7,7 @@ The Weblog object parses a log line and returns the weblog object.
 
 import re
 import dateutil.parser
+from urllib.parse import urlparse
 
 
 class Weblog(object):
@@ -56,6 +57,10 @@ class Weblog(object):
             if m:
                 return m.group(1)
         return None
+
+    def path(self):
+        o = urlparse(self.url)
+        return o.path
 
     def is_download(self):
         """Returns true if the weblog represents a download"""
