@@ -16,6 +16,7 @@ MINIMUM_MYSQL_VERSION = '5.7'
 
 @pytest.fixture
 def db_connection():
+    """Get a connection for the temporary database"""
     conn = pymysql.connect(host=os.environ['TMP_DBWRITER_HOSTNAME'],
                            database=os.environ['TMP_DBWRITER_DATABASE'],
                            user=os.environ['TMP_DBWRITER_USERNAME'],

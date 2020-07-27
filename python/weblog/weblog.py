@@ -16,7 +16,7 @@ class Weblog(object):
     """
     __slots__  = ['ipaddr', 'ident', 'user', 'dtime', 'request', 'result',
                   'size', 'agent', 'referrer', 'method', 'url']
-    CLF_REGEX  = r'([(\d\.)]+) ([^ ]+) ([^ ]+) \[(.*)\] "(.*)" (\d+) (\d+)( "[^"]*")?( "[^"]*")?'
+    CLF_REGEX  = r'([(\d\.)]+) ([^ ]+) ([^ ]+) \[(.*)\] "(.*)" (\d+) (\d+|-)( "[^"]*")?( "[^"]*")?'
     CLF_RE     = re.compile(CLF_REGEX)
     WIKIPAGE_PATS = [re.compile(x) for x in [r"index.php\?title=([^ &]*)", "/wiki/([^ &]*)"]]
     DL_PAT     = re.compile(r"(.*)[.](gz|E\d\d|csv|dd|raw|iso)$", re.I)
@@ -32,7 +32,10 @@ class Weblog(object):
         self.dtime  = dateutil.parser.parse(m.group(4).replace(':', ' ', 1))
         self.request   = m.group(5)
         self.result    = int(m.group(6))
-        self.size      = int(m.group(7))
+        try:
+            self.size      = int(m.group(7))
+        except ValueError:
+            self.size  = None
         try:
             self.referrer  = m.group(8)[2:-1]  # remove the space and quotes
         except (IndexError, TypeError):

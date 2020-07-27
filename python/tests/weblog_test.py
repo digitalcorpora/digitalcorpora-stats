@@ -9,6 +9,7 @@ LINE2 = '129.174.125.204 - - [16/Jun/2019:05:18:15 -0400] "GET /downloads/tcpflo
 LINE3 = '129.174.125.204 - - [16/Jun/2019:09:06:56 -0400] "GET /corpora/scenarios/2009-m57-patents/ HTTP/1.1" 200 3812 "http://downloads.digitalcorpora.org/corpora/scenarios/2009-m57-patents/drives-redacted/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36"'
 LINE4 = '129.174.125.204 - - [16/Jun/2019:05:18:15 -0400] "GET /downloads/tcpflow/tcpflow-1.5.0.tar.gz  HTTP/1.1" 200 460000 "-" "Anitya 0.15.1 at release-monitoring.org"'
 LINE5 = '129.174.125.204 - - [16/Jun/2019:09:06:56 -0400] "GET /corpora/drives/nps-2009-patents/drives-redacted/charlie-2009-11-23.E01 HTTP/1.1" 200 4294967296 3812 "http://downloads.digitalcorpora.org/corpora/scenarios/2009-m57-patents/drives-redacted/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36"'
+LINE6 = '54.164.96.238 - - [26/Jul/2020:04:13:28 -0400] "HEAD /corpora/files/govdocs1/dump.sql HTTP/1.1" 200 - "-" "Blackboard Safeassign"'
 
 
 def test_line1():
@@ -63,3 +64,7 @@ def test_line4():
 
     log5 = Weblog(LINE5)
     assert log5.is_download()
+
+def test_extra():
+    log6 = Weblog(LINE6)
+    
