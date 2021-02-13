@@ -9,14 +9,12 @@ Routines for managing the databse schema.
 """
 
 import os
+from os.path import dirname,abspath
 
-SCHEMA_FILE = "../schema.sql"
-
+SCHEMA_FILE = os.path.join(dirname(dirname(abspath(__file__))), "schema.sql")
 
 def get_schema():
-    with open(os.path.abspath(os.path.join(os.path.dirname(__file__), SCHEMA_FILE))) as f:
-        return f.read()
-
+    return open(SCHEMA_FILE).read()
 
 def send_schema(cursor):
     for statement in get_schema().split(";"):
@@ -26,16 +24,16 @@ def send_schema(cursor):
 
 
 def send_weblog(cursor, obj):
+    """ Take a weblog agent and insert it into the digitalcorpora log file"""
     from weblog.weblog import Weblog
     assert isinstance(obj, Weblog)
-    """ If this is a downloadable request, make sure that the download exists in the dowloadable table, then add it to the download downloads table"""
     if obj.is_download():
         path = obj.path
-        dirname  = os.path.dirname(path)
+        prefix  = os.path.dirname(path)
         basename = os.path.basename(path)
-        cursor.execute("INSERT INTO downloadable (dirname,basename,size) VALUES (%s,%s,%s) ON DUPLICATE KEY UPDATE size=size",
-                       (dirname, os.path.basename(path), obj.size))
+        cursor.execute("INSERT INTO downloadable (prefix,basename,size) VALUES (%s,%s,%s) ON DUPLICATE KEY UPDATE size=size",
+                       (prefix, os.path.basename(path), obj.size))
         cursor.execute("COMMIT")
-        cursor.execute("INSERT INTO downloads (did, ipaddr, dtime, request, user, referrer, agent) VALUES ((select id from downloadable where dirname=%s and basename=%s),%s,%s,%s,%s,%s,%s)",
-                       (dirname, basename, obj.ipaddr, obj.dtime, obj.request, obj.user, obj.referrer, obj.agent))
+        cursor.execute("INSERT INTO downloads (did, ipaddr, dtime) VALUES ((select id from downloadable where prefix=%s and basename=%s), %s, %s)",
+                       (prefix, basename, obj.ipaddr, obj.dtime))
         cursor.execute("COMMIT")
