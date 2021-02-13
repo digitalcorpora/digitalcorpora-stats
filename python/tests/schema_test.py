@@ -2,6 +2,7 @@
 """
 Make sure that the schema works.
 """
+
 import pytest
 import pymysql
 import os
