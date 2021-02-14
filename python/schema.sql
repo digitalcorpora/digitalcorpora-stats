@@ -8,6 +8,7 @@ CREATE TABLE downloadable (
         size INTEGER ,
         mtime DATETIME,
         tags JSON,
+        etag     varchar(64),
         sha2_256 varchar(64),
         sha3_256 varchar(64),
         primary key (id),
@@ -15,6 +16,7 @@ CREATE TABLE downloadable (
         index (basename),
         index (size),
         index (mtime),
+        index (etag),
         index (sha2_256),
         index (sha3_256)
         );
