@@ -5,10 +5,10 @@ import pymysql
 import os
 
 def get_table(db_conn, interval):
-    query = "SELECT downloadable.dirname, downloadable.basename, count(*) as " \
-            "total_downloads FROM downloads LEFT JOIN downloadable on downloads.did " \
+    query = "SELECT downloadable.dirname as `Directory Name`, downloadable.basename as `File Name`, count(*) as " \
+            "`Total Downloads` FROM downloads LEFT JOIN downloadable on downloads.did " \
             "= downloadable.id  WHERE downloads.dtime >= now() - interval " \
-            + interval + " group by downloadable.dirname, downloadable.basename order by total_downloads desc limit 10;"
+            + interval + " group by `Directory Name`, `File Name` order by `Total Downloads` desc limit 10;"
     db_conn.execute(query)
     header = [i[0] for i in db_conn.description]
     rows = [list(i) for i in db_conn.fetchall()]
@@ -30,57 +30,60 @@ def list_to_html(the_list):
     htable += '</table>'
     return htable
 
+def get_webpage(cursor):
+    page_header = """<!DOCTYPE html> 
+    <html>
+    <head>
 
-conn = pymysql.connect(host="mysql.digitalcorpora.org",
-    database="dcstats",
-    user="dwriter",
-    password="zruiuGfbMiNWtzM")
-cursor = conn.cursor()
-
-page_header = """<!DOCTYPE html> 
-<html>
-<head>
-
-</head>
- 
- <body>
- <style>
-    .box{
-        display: none;
-    }
-</style>
- 
- <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
-<script>
-$(document).ready(function(){
-    $('input[type="radio"]').click(function(){
-        var inputValue = $(this).attr("value");
-        var targetBox = $("." + inputValue);
-        $(".box").not(targetBox).hide();
-        $(targetBox).show();
-    });
-});
-</script>
-    <div>
-        <label><input type="radio" name="colorRadio" value="day">Current Day</label>
-        <label><input type="radio" name="colorRadio" value="week">Last 7 Days</label>
-        <label><input type="radio" name="colorRadio" value="month">Last 30 Day</label>
-        <label><input type="radio" name="colorRadio" value="all">All Time</label>
-    </div>
+    </head>
     
+    <body>
+    <style>
+        .box{
+            display: none;
+        }
+    </style>
+    
+    <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
+    <script>
+    $(document).ready(function(){
+        $('input[type="radio"]').click(function(){
+            var inputValue = $(this).attr("value");
+            var targetBox = $("." + inputValue);
+            $(".box").not(targetBox).hide();
+            $(targetBox).show();
+        });
+    });
+    </script>
+        <div>
+            <label><input type="radio" name="colorRadio" value="day">Current Day</label>
+            <label><input type="radio" name="colorRadio" value="week">Last 7 Days</label>
+            <label><input type="radio" name="colorRadio" value="month">Last 30 Day</label>
+            <label><input type="radio" name="colorRadio" value="all">All Time</label>
+        </div>
+        
+        """
+
+    day_section = '<div class="day box">Current Day \n ' + list_to_html(get_table(cursor, "1 DAY")) + '</div>\n'
+    week_section = '<div class="week box">Last 7 Days \n ' + list_to_html(get_table(cursor, "1 WEEK")) + '</div>\n'
+    month_section = '<div class="month box">Current Day \n ' + list_to_html(get_table(cursor, "1 MONTH")) + '</div>\n'
+    all_section = '<div class="month box">All Time \n ' + list_to_html(get_table(cursor, "100 YEAR")) + '</div>\n'
+
+    page_footer = """
+    </body>
+    </html>
     """
 
-day_section = '<div class="day box">Current Day \n ' + list_to_html(get_table(cursor, "1 DAY")) + '</div>\n'
-week_section = '<div class="week box">Last 7 Days \n ' + list_to_html(get_table(cursor, "1 WEEK")) + '</div>\n'
-month_section = '<div class="month box">Current Day \n ' + list_to_html(get_table(cursor, "1 MONTH")) + '</div>\n'
-all_section = '<div class="month box">All Time \n ' + list_to_html(get_table(cursor, "100 YEAR")) + '</div>\n'
+    webpage = page_header + day_section + week_section + month_section + all_section + page_footer
+    return webpage
 
-page_footer = """
- </body>
- </html>
-"""
+def main():
+    conn = pymysql.connect(host="mysql.digitalcorpora.org",
+        database="dcstats",
+        user="dwriter",
+        password="zruiuGfbMiNWtzM")
+    cursor = conn.cursor()
+    print(get_webpage(cursor))
 
-webpage = page_header + day_section + week_section + month_section + all_section + page_footer
-
-print(webpage)
-
+if __name__ == "__main__":
+    main()
