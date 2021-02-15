@@ -4,6 +4,7 @@
 
 import boto3
 import base64
+import json
 from botocore.exceptions import ClientError
 
 
@@ -52,12 +53,10 @@ def get_secret():
         # Decrypts secret using the associated KMS CMK.
         # Depending on whether the secret is a string or binary, one of these fields will be populated.
         if 'SecretString' in get_secret_value_response:
-            secret = get_secret_value_response['SecretString']
+            return json.loads(get_secret_value_response['SecretString'])
         else:
-            decoded_binary_secret = base64.b64decode(get_secret_value_response['SecretBinary'])
+            return base64.b64decode(get_secret_value_response['SecretBinary'])
 
-    # Your code goes here.
-    return secret
 
 if __name__=="__main__":
     print(get_secret())

@@ -53,9 +53,10 @@ if __name__ == "__main__":
 
 
     if args.aws:
-        s = aws_secrets.secrets()
+        s = aws_secrets.get_secret()
+        print("s=",s)
         auth = ctools.dbfile.DBMySQLAuth(host=s['host'],
-                                         daatabase=s['dbname'],
+                                         database=s['dbname'],
                                          user=s['username'],
                                          password=s['password'],
                                          debug=args.debug)
