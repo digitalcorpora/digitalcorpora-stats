@@ -29,7 +29,7 @@ def import_logfile(auth, logfile, args):
 
 
 def import_s3(auth, s3prefix):
-    p = urllib.parse.parse(s3prefix)
+    p = urllib.parse.urlparse(s3prefix)
 
     s3client  = boto3.client('s3', config=Config(signature_version=UNSIGNED))
     paginator = s3client.get_paginator('list_objects_v2')
