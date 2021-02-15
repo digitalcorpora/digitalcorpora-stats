@@ -11,6 +11,11 @@ import weblog.weblog
 import aws_secrets
 import ctools.dbfile
 import urllib.parse
+import boto3
+
+from botocore import UNSIGNED
+from botocore.client import Config
+from botocore.exceptions import ClientError
 
 def import_logfile(auth, logfile, args):
     # see if the schema is present. If not, send it with the wipe command
