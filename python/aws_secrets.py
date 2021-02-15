@@ -1,5 +1,5 @@
 # Use this code snippet in your app.
-# If you need more information about configurations or implementing the sample code, visit the AWS docs:   
+# If you need more information about configurations or implementing the sample code, visit the AWS docs:
 # https://aws.amazon.com/developers/getting-started/python/
 
 import boto3
@@ -55,5 +55,9 @@ def get_secret():
             secret = get_secret_value_response['SecretString']
         else:
             decoded_binary_secret = base64.b64decode(get_secret_value_response['SecretBinary'])
-            
-    # Your code goes here. 
+
+    # Your code goes here.
+    return secret
+
+if __name__=="__main__":
+    print(get_secret())

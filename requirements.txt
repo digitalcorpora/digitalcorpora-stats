@@ -1,2 +1,3 @@
 python-dateutil
 pymysql
+boto3
