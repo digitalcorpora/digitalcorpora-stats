@@ -5,7 +5,7 @@ CREATE TABLE downloadable (
         id INTEGER NOT NULL AUTO_INCREMENT,
         prefix VARCHAR(255) NOT NULL,
         basename VARCHAR(255) NOT NULL,
-        size INTEGER ,
+        bytes INTEGER ,
         mtime DATETIME,
         tags JSON,
         etag     varchar(64),
