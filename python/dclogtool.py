@@ -60,8 +60,11 @@ def import_s3obj(obj):
 
     # Make sure that this object is in the database. This may fail
     # The connection should be cached.
-    ctools.dbfile.csfr(auth, "insert into downloadable (prefix,basename,bytes,mtime,etag) values (%s,%s,%s,%s,%s)",
-                       os.path.dirname(obj['Key']), os.path.basename(obj['Key']), obj['Size'], obj['LastModified'],obj['ETag'])
+
+    cmd = "insert into downloadable (prefix,basename,bytes,mtime,etag) values (%s,%s,%s,%s,%s)"
+    vals = (os.path.dirname(obj['Key']), os.path.basename(obj['Key']), obj['Size'], obj['LastModified'],obj['ETag'])
+    ctools.dbfile.DBMySQL.csfr(auth, cmd, vals, time_zone='UTC')
+
     body = o2['Body']
     bytes_hashed = 0
     sha2_256 = hashlib.sha256()
@@ -96,7 +99,7 @@ def import_s3prefix(auth, s3prefix, threads=40):
             obj['auth']   = auth
             obj['Bucket'] = p.netloc
             if threads==1:
-                import_s3obj(objs)
+                import_s3obj(obj)
             else:
                 objs.append(obj)
 
