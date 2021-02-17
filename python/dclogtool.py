@@ -47,7 +47,7 @@ def import_s3obj(obj):
     key  = os.path.dirname(obj['Key'])
     # Make sure that this object is in the database.
 
-    cmd = "insert into downloadable (prefix,basename,bytes,mtime,etag) values (%s,%s,%s,%s,%s)"
+    cmd = "insert into downloadable (key,bytes,mtime,etag) values (%s,%s,%s,%s)"
 
     vals = (d, b, obj['Size'], obj['LastModified'],obj['ETag'])
     try:
@@ -55,8 +55,11 @@ def import_s3obj(obj):
     except pymysql.err.IntegrityError as e:
         if e.args[0]==1062:
             # It already exists. If the ETag hasn't changed, just return
-            rows = ctools.dbfile.DBMySQL.csfr("SELECT * auth, cmd, vals)
-
+            rows = ctools.dbfile.DBMySQL.csfr(auth, "SELECT ETag from downloadable where key=%s", (key,))
+            if len(rows)==1 and rows[0][0]==obj['ETag']:
+                return None
+        else:
+            raise(e)
 
     s3client  = boto3.client('s3', config=Config(signature_version=UNSIGNED))
     o2 = s3client.get_object(Bucket=obj['Bucket'],Key=obj['Key'])
@@ -65,13 +68,6 @@ def import_s3obj(obj):
     Typical o2:
     {'ResponseMetadata': {'RequestId': 'EF6D913C1C48EEF1', 'HostId': 'CB6TRV/KlxtzU4FbXiYQKb6+PPYztCzvdI1FcXAeAoNeXkiGhm+BwBrrIUqbNyGPy3XsqsKENOU=', 'HTTPStatusCode': 200, 'HTTPHeaders': {'x-amz-id-2': 'CB6TRV/KlxtzU4FbXiYQKb6+PPYztCzvdI1FcXAeAoNeXkiGhm+BwBrrIUqbNyGPy3XsqsKENOU=', 'x-amz-request-id': 'EF6D913C1C48EEF1', 'date': 'Tue, 16 Feb 2021 01:32:14 GMT', 'last-modified': 'Sat, 21 Nov 2020 23:07:31 GMT', 'etag': '"3045e3c6a79e791bbacd97a06c27f969"', 'x-amz-storage-class': 'INTELLIGENT_TIERING', 'x-amz-version-id': 'kNdAWbQHuj0p_HxvobEGvcjuZKWox7Ct', 'accept-ranges': 'bytes', 'content-type': 'audio/mpeg', 'content-length': '384429', 'server': 'AmazonS3'}, 'RetryAttempts': 0}, 'AcceptRanges': 'bytes', 'LastModified': datetime.datetime(2020, 11, 21, 23, 7, 31, tzinfo=tzutc()), 'ContentLength': 384429, 'ETag': '"3045e3c6a79e791bbacd97a06c27f969"', 'VersionId': 'kNdAWbQHuj0p_HxvobEGvcjuZKWox7Ct', 'ContentType': 'audio/mpeg', 'Metadata': {}, 'StorageClass': 'INTELLIGENT_TIERING', 'Body': <botocore.response.StreamingBody object at 0x7f0d5f98ca10>}
     """
-    # Verify this is the same object
-    if obj['ETag'] != o2['ETag']:
-        # object changed...?
-        return;
-
-    assert obj['Size']==o2['ContentLength']
-
     # See if the
 
     body = o2['Body']
@@ -87,15 +83,14 @@ def import_s3obj(obj):
         bytes_hashed += len(data)
     assert bytes_hashed==obj['Size']
     # Record the hashes in obj and return it
-    obj['sha2_256'] = sha2_256.hexdigest()
-    obj['sha3_256'] = sha3_256.hexdigest()
+    o2['sha2_256'] = sha2_256.hexdigest()
+    o2['sha3_256'] = sha3_256.hexdigest()
 
-    # Update the database
-    cmd = "update downloadable set sha2_256=%s,sha3_256=%s where prefix=%s and basename=%s"
-    vals = (obj['sha2_256'], obj['sha3_256'], os.path.dirname(obj['Key']), os.path.basename(obj['Key']))
+    # Update the database. Remember, everything may have changed.
+    cmd = "update downloadable set ETag=%s,bytes=%ssha2_256=%s,sha3_256=%s where key=%s"
+    vals = (o2['ETag'],bytes_hashed,o2['sha2_256'], obj['sha3_256'], o2['Key'])
     ctools.dbfile.DBMySQL.csfr(auth, cmd, vals)
-
-    return obj
+    return o2
 
 def import_s3prefix(auth, s3prefix, threads=40):
     """Because we can enumerate all of digitalcorpora in 3 seconds, we do that here. We then request hashing using python's multiprocessing module"""
