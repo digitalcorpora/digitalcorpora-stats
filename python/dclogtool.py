@@ -43,7 +43,22 @@ def import_s3obj(obj):
     :param auth: authentication object.
     :param obj: dictionary with s3 object information.
     """
+
     auth = obj['auth']
+    key  = os.path.dirname(obj['Key'])
+    # Make sure that this object is in the database.
+
+    cmd = "insert into downloadable (prefix,basename,bytes,mtime,etag) values (%s,%s,%s,%s,%s)"
+
+    vals = (d, b, obj['Size'], obj['LastModified'],obj['ETag'])
+    try:
+        ctools.dbfile.DBMySQL.csfr(auth, cmd, vals)
+    except pymysql.err.IntegrityError as e:
+        if e.args[0]==1062:
+            # It already exists. If the ETag hasn't changed, just return
+            rows = ctools.dbfile.DBMySQL.csfr("SELECT * auth, cmd, vals)
+
+
     s3client  = boto3.client('s3', config=Config(signature_version=UNSIGNED))
     o2 = s3client.get_object(Bucket=obj['Bucket'],Key=obj['Key'])
 
@@ -58,12 +73,7 @@ def import_s3obj(obj):
 
     assert obj['Size']==o2['ContentLength']
 
-    # Make sure that this object is in the database. This may fail
-    # The connection should be cached.
-
-    cmd = "insert into downloadable (prefix,basename,bytes,mtime,etag) values (%s,%s,%s,%s,%s)"
-    vals = (os.path.dirname(obj['Key']), os.path.basename(obj['Key']), obj['Size'], obj['LastModified'],obj['ETag'])
-    ctools.dbfile.DBMySQL.csfr(auth, cmd, vals, time_zone='UTC')
+    # See if the
 
     body = o2['Body']
     bytes_hashed = 0
@@ -80,9 +90,11 @@ def import_s3obj(obj):
     # Record the hashes in obj and return it
     obj['sha2_256'] = sha2_256.hexdigest()
     obj['sha3_256'] = sha3_256.hexdigest()
-    print(obj['Key'],obj['sha2_256'])
 
-    # Can we write to the database?
+    # Update the database
+    cmd = "update downloadable set sha2_256=%s,sha3_256=%s where prefix=%s and basename=%s"
+    vals = (obj['sha2_256'], obj['sha3_256'], os.path.dirname(obj['Key']), os.path.basename(obj['Key']))
+    ctools.dbfile.DBMySQL.csfr(auth, cmd, vals)
 
     return obj
 
@@ -126,8 +138,9 @@ if __name__ == "__main__":
 
     if args.aws:
         s = aws_secrets.get_secret()
+        database = "dcstats_test" if not args.prod else 'dcstats'
         auth = ctools.dbfile.DBMySQLAuth(host=s['host'],
-                                         database=s['dbname'],
+                                         database=database,
                                          user=s['username'],
                                          password=s['password'],
                                          debug=args.debug)
@@ -138,6 +151,9 @@ if __name__ == "__main__":
                                          database=database,
                                          user=os.environ['DBWRITER_USERNAME'],
                                          password=os.environ['DBWRITER_PASSWORD'])
+
+    if args.debug:
+        print("auth:",auth)
 
     if args.logfile:
         import_logfile(auth, args.logfile, args)
