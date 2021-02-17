@@ -5,6 +5,6 @@ check:
 configure-aws:
 	sudo yum install -y python3 python3-pip python3-wheel git emacs
 	git config --global pager.branch false
-	sudo python3 -m pip install --upgrade pip
+	python3 -m pip install --upgrade pip
 	pip3 install --user -r requirements.txt
 	pip3 install --user -r requirements-dev.txt

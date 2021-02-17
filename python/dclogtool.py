@@ -34,7 +34,6 @@ def import_logfile(auth, logfile, args):
             obj = weblog.weblog.Weblog(line)
             weblog.schema.send_weblog(cursor, obj)
 
-
 BUFSIZE=65536
 def import_s3obj(obj):
     """
@@ -119,7 +118,6 @@ def import_s3prefix(auth, s3prefix, threads=40):
     if threads>1:
         with multiprocessing.Pool(threads) as p:
             results = p.map(import_s3obj, objs)
-
 
 if __name__ == "__main__":
     import argparse
