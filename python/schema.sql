@@ -3,7 +3,7 @@ SET FOREIGN_KEY_CHECKS=0;
 DROP TABLE IF EXISTS downloadable;
 CREATE TABLE downloadable (
         id INTEGER NOT NULL AUTO_INCREMENT,
-        s3key VARCHAR(1024) NOT NULL,
+        s3key VARCHAR(768) NOT NULL,
         bytes INTEGER ,
         mtime DATETIME,
         tags JSON,
@@ -17,7 +17,7 @@ CREATE TABLE downloadable (
         index (etag),
         index (sha2_256),
         index (sha3_256)
-        );
+);
 
 DROP TABLE IF EXISTS downloads;
 CREATE TABLE downloads (
@@ -29,7 +29,7 @@ CREATE TABLE downloads (
         FOREIGN KEY (did) REFERENCES downloadable(id),
         INDEX (ipaddr),
         INDEX (dtime)
-        );
+);
 
 DROP TABLE IF EXISTS tags;
 CREATE TABLE tags (
