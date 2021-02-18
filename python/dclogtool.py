@@ -143,9 +143,6 @@ if __name__ == "__main__":
                                              password=os.environ['DBWRITER_PASSWORD'],
                                              debug=args.debug)
 
-    if args.wipe:
-        wipe(auth)
-
     if args.debug:
         print("auth:",auth)
 

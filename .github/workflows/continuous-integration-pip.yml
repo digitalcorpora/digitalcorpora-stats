@@ -27,7 +27,6 @@ jobs:
 
       - name: Lint with flake8
         run: |
-          printenv
           export PATH=$HOME/.local/bin:$PATH
 
           # stop the build if there are Python syntax errors or undefined names
@@ -48,7 +47,9 @@ jobs:
           TMP_DBWRITER_DATABASE: ${{ secrets.TMP_DBWRITER_DATABASE }}
           TMP_DBWRITER_USERNAME: ${{ secrets.TMP_DBWRITER_USERNAME }}
           TMP_DBWRITER_PASSWORD: ${{ secrets.TMP_DBWRITER_PASSWORD }}
-        run: pytest --cov=./ --cov-report=xml python
+        run: |
+          export PATH=$HOME/.local/bin:$PATH
+          pytest --cov=./ --cov-report=xml python
 
-      #- name: Upload coverage
-      #  uses: codecov/codecov-action@v1
+      - name: Upload coverage
+        uses: codecov/codecov-action@v1
