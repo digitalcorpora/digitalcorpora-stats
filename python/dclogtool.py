@@ -43,12 +43,11 @@ def import_s3obj(obj):
     :param obj: dictionary with s3 object information.
     """
 
-    auth = obj['auth']
-    s3key  = os.path.dirname(obj['Key'])
+    auth   = obj['auth']
+    s3key  = obj['Key']
     # Make sure that this object is in the database.
 
-    cmd = "insert into downloadable (s3key,bytes,mtime,etag) values (%s,%s,%s,%s)"
-
+    cmd  = "insert into downloadable (s3key,bytes,mtime,etag) values (%s,%s,%s,%s)"
     vals = (s3key, obj['Size'], obj['LastModified'],obj['ETag'])
     try:
         ctools.dbfile.DBMySQL.csfr(auth, cmd, vals)
@@ -57,20 +56,21 @@ def import_s3obj(obj):
             # It already exists. If the ETag hasn't changed, just return
             rows = ctools.dbfile.DBMySQL.csfr(auth, "SELECT ETag from downloadable where s3key=%s", (s3key,))
             if len(rows)==1 and rows[0][0]==obj['ETag']:
+                if obj['verbose']:
+                    print('no update',s3key)
                 return None
         else:
             raise(e)
 
+    # Get a handle to the s3 file
     s3client  = boto3.client('s3', config=Config(signature_version=UNSIGNED))
-    o2 = s3client.get_object(Bucket=obj['Bucket'],Key=obj['Key'])
+    o2   = s3client.get_object(Bucket=obj['Bucket'],Key=obj['Key'])
 
     """
     Typical o2:
     {'ResponseMetadata': {'RequestId': 'EF6D913C1C48EEF1', 'HostId': 'CB6TRV/KlxtzU4FbXiYQKb6+PPYztCzvdI1FcXAeAoNeXkiGhm+BwBrrIUqbNyGPy3XsqsKENOU=', 'HTTPStatusCode': 200, 'HTTPHeaders': {'x-amz-id-2': 'CB6TRV/KlxtzU4FbXiYQKb6+PPYztCzvdI1FcXAeAoNeXkiGhm+BwBrrIUqbNyGPy3XsqsKENOU=', 'x-amz-request-id': 'EF6D913C1C48EEF1', 'date': 'Tue, 16 Feb 2021 01:32:14 GMT', 'last-modified': 'Sat, 21 Nov 2020 23:07:31 GMT', 'etag': '"3045e3c6a79e791bbacd97a06c27f969"', 'x-amz-storage-class': 'INTELLIGENT_TIERING', 'x-amz-version-id': 'kNdAWbQHuj0p_HxvobEGvcjuZKWox7Ct', 'accept-ranges': 'bytes', 'content-type': 'audio/mpeg', 'content-length': '384429', 'server': 'AmazonS3'}, 'RetryAttempts': 0}, 'AcceptRanges': 'bytes', 'LastModified': datetime.datetime(2020, 11, 21, 23, 7, 31, tzinfo=tzutc()), 'ContentLength': 384429, 'ETag': '"3045e3c6a79e791bbacd97a06c27f969"', 'VersionId': 'kNdAWbQHuj0p_HxvobEGvcjuZKWox7Ct', 'ContentType': 'audio/mpeg', 'Metadata': {}, 'StorageClass': 'INTELLIGENT_TIERING', 'Body': <botocore.response.StreamingBody object at 0x7f0d5f98ca10>}
     """
-    # See if the
-
-    body = o2['Body']
+    body         = o2['Body']
     bytes_hashed = 0
     sha2_256 = hashlib.sha256()
     sha3_256 = hashlib.sha3_256()
@@ -81,18 +81,17 @@ def import_s3obj(obj):
         sha2_256.update(data)
         sha3_256.update(data)
         bytes_hashed += len(data)
-    assert bytes_hashed==obj['Size']
-    # Record the hashes in obj and return it
-    o2['sha2_256'] = sha2_256.hexdigest()
-    o2['sha3_256'] = sha3_256.hexdigest()
+    assert bytes_hashed == o2['ContentLength']
 
-    # Update the database. Remember, everything may have changed.
-    cmd = "update downloadable set ETag=%s, bytes=%s, sha2_256=%s, sha3_256=%s where s3key=%s"
-    vals = (o2['ETag'],bytes_hashed,o2['sha2_256'], o2['sha3_256'], s3key)
+    # Update the database. Remember, every column except the key may have changed.
+    cmd = "update downloadable set ETag=%s, mtime=%s, bytes=%s, sha2_256=%s, sha3_256=%s where s3key=%s"
+    vals = (o2['ETag'], o2['LastModified'], bytes_hashed, sha2_256.hexdigest(), sha3_256.hexdigest(), s3key)
     ctools.dbfile.DBMySQL.csfr(auth, cmd, vals)
-    return o2
+    if obj['verbose']:
+        print('updated',s3key)
+    return s3key
 
-def import_s3prefix(auth, s3prefix, threads=40):
+def import_s3prefix(auth, s3prefix, threads=40, verbose=False):
     """Because we can enumerate all of digitalcorpora in 3 seconds, we do that here. We then request hashing using python's multiprocessing module"""
     p = urllib.parse.urlparse(s3prefix)
 
@@ -104,6 +103,7 @@ def import_s3prefix(auth, s3prefix, threads=40):
         for obj in page.get('Contents'):
             obj['auth']   = auth
             obj['Bucket'] = p.netloc
+            obj['verbose'] = verbose
             if threads==1:
                 import_s3obj(obj)
             else:
@@ -123,6 +123,7 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action='store_true')
     parser.add_argument("--s3prefix", help="Scan an S3 prefix")
     parser.add_argument("--threads", "-j", type=int, default=1)
+    parser.add_argument("--verbose", action='store_true')
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--aws", help="Get database password from aws secrets system", action='store_true')
     g.add_argument("--env", help="Get database password from environment variables", action='store_true')
