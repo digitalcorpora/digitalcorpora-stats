@@ -19,16 +19,16 @@ from botocore import UNSIGNED
 from botocore.client import Config
 from botocore.exceptions import ClientError
 
+def wipe(auth):
+    db = ctools.dbfile.DBMySQL(auth)
+    db.create_schema( open('schema.sql').read())
+
+
 def import_logfile(auth, logfile, args):
     # see if the schema is present. If not, send it with the wipe command
-    db = ctools.dbfile.CBMySQL(auth)
+    db = ctools.dbfile.DBMySQL(auth)
     cursor = db.cursor()
-    try:
-        cursor.execute("SELECT count(*) from downloads")
-    except pymysql.err.ProgrammingError:
-        args.wipe = True
-    if args.wipe:
-        weblog.schema.send_schema(cursor)
+    cursor.execute("SELECT count(*) from downloads")
     with open(logfile) as f:
         for line in f:
             obj = weblog.weblog.Weblog(line)
@@ -115,7 +115,7 @@ if __name__ == "__main__":
     parser.add_argument("--prod", help="Use production databsae", action='store_true')
     parser.add_argument("--logfile", help="Log file to import")
     parser.add_argument("--aws", help="Get database password from aws secrets system", action='store_true')
-    parser.add_argument("--env", help="Get database password from environment varialbes file")
+    parser.add_argument("--env", help="Get database password from environment variables file", action='store_true')
     parser.add_argument("--debug", action='store_true')
     parser.add_argument("--s3prefix", help="Scan an S3 prefix")
     parser.add_argument("--threads", "-j", type=int, default=1)
@@ -133,9 +133,13 @@ if __name__ == "__main__":
     elif args.env:
         database = "dcstats_test" if not args.prod else 'dcstats'
         auth = ctools.dbfile.DBMySQLAuth(host=os.environ['DBWRITER_HOSTNAME'],
-                                         database=database,
-                                         user=os.environ['DBWRITER_USERNAME'],
-                                         password=os.environ['DBWRITER_PASSWORD'])
+                                             database=database,
+                                             user=os.environ['DBWRITER_USERNAME'],
+                                             password=os.environ['DBWRITER_PASSWORD'],
+                                             debug=args.debug)
+
+    if args.wipe:
+        wipe(auth)
 
     if args.logfile:
         import_logfile(auth, args.logfile, args)

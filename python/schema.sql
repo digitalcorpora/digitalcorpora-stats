@@ -3,8 +3,7 @@ SET FOREIGN_KEY_CHECKS=0;
 DROP TABLE IF EXISTS downloadable;
 CREATE TABLE downloadable (
         id INTEGER NOT NULL AUTO_INCREMENT,
-        prefix VARCHAR(255) NOT NULL,
-        basename VARCHAR(255) NOT NULL,
+        s3key VARCHAR(1024) NOT NULL,
         bytes INTEGER ,
         mtime DATETIME,
         tags JSON,
@@ -12,9 +11,8 @@ CREATE TABLE downloadable (
         sha2_256 varchar(64),
         sha3_256 varchar(64),
         primary key (id),
-        unique index (prefix,basename),
-        index (basename),
-        index (size),
+        unique index (s3key),
+        index (bytes),
         index (mtime),
         index (etag),
         index (sha2_256),
