@@ -44,18 +44,18 @@ def import_s3obj(obj):
     """
 
     auth = obj['auth']
-    key  = os.path.dirname(obj['Key'])
+    s3key  = os.path.dirname(obj['Key'])
     # Make sure that this object is in the database.
 
-    cmd = "insert into downloadable (key,bytes,mtime,etag) values (%s,%s,%s,%s)"
+    cmd = "insert into downloadable (s3key,bytes,mtime,etag) values (%s,%s,%s,%s)"
 
-    vals = (d, b, obj['Size'], obj['LastModified'],obj['ETag'])
+    vals = (s3key, obj['Size'], obj['LastModified'],obj['ETag'])
     try:
         ctools.dbfile.DBMySQL.csfr(auth, cmd, vals)
     except pymysql.err.IntegrityError as e:
         if e.args[0]==1062:
             # It already exists. If the ETag hasn't changed, just return
-            rows = ctools.dbfile.DBMySQL.csfr(auth, "SELECT ETag from downloadable where key=%s", (key,))
+            rows = ctools.dbfile.DBMySQL.csfr(auth, "SELECT ETag from downloadable where s3key=%s", (s3key,))
             if len(rows)==1 and rows[0][0]==obj['ETag']:
                 return None
         else:
@@ -87,8 +87,8 @@ def import_s3obj(obj):
     o2['sha3_256'] = sha3_256.hexdigest()
 
     # Update the database. Remember, everything may have changed.
-    cmd = "update downloadable set ETag=%s,bytes=%ssha2_256=%s,sha3_256=%s where key=%s"
-    vals = (o2['ETag'],bytes_hashed,o2['sha2_256'], obj['sha3_256'], o2['Key'])
+    cmd = "update downloadable set ETag=%s, bytes=%s, sha2_256=%s, sha3_256=%s where s3key=%s"
+    vals = (o2['ETag'],bytes_hashed,o2['sha2_256'], o2['sha3_256'], s3key)
     ctools.dbfile.DBMySQL.csfr(auth, cmd, vals)
     return o2
 
@@ -109,7 +109,6 @@ def import_s3prefix(auth, s3prefix, threads=40):
             else:
                 objs.append(obj)
 
-
     if threads>1:
         with multiprocessing.Pool(threads) as p:
             results = p.map(import_s3obj, objs)
@@ -118,14 +117,15 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Import the Digital Corpora logs.',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--wipe", help="Wipe database", action='store_true')
-    parser.add_argument("--prod", help="Use production databsae", action='store_true')
+    parser.add_argument("--wipe", help="Wipe database and load a new schema", action='store_true')
+    parser.add_argument("--prod", help="Use production database", action='store_true')
     parser.add_argument("--logfile", help="Log file to import")
-    parser.add_argument("--aws", help="Get database password from aws secrets system", action='store_true')
-    parser.add_argument("--env", help="Get database password from environment varialbes file")
     parser.add_argument("--debug", action='store_true')
     parser.add_argument("--s3prefix", help="Scan an S3 prefix")
     parser.add_argument("--threads", "-j", type=int, default=1)
+    g = parser.add_mutually_exclusive_group(required=True)
+    g.add_argument("--aws", help="Get database password from aws secrets system", action='store_true')
+    g.add_argument("--env", help="Get database password from environment variables", action='store_true')
     args = parser.parse_args()
 
 
@@ -147,6 +147,10 @@ if __name__ == "__main__":
 
     if args.debug:
         print("auth:",auth)
+
+    if args.wipe:
+        db = ctools.dbfile.DBMySQL(auth)
+        db.create_schema(open("schema.sql","r").read())
 
     if args.logfile:
         import_logfile(auth, args.logfile, args)
