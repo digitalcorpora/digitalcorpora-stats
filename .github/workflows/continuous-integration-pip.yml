@@ -19,12 +19,16 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: |
+          export PATH=$HOME/.local/bin:$PATH
+          printenv
           python -m pip install --upgrade pip
           pip install --user -r requirements.txt
           pip install --user -r requirements-dev.txt
 
       - name: Lint with flake8
         run: |
+          export PATH=$HOME/.local/bin:$PATH
+
           # stop the build if there are Python syntax errors or undefined names
           flake8 python --count --select=E9,F63,F7,F82,W91,W293,W391 --show-source --statistics
 
@@ -43,7 +47,9 @@ jobs:
           TMP_DBWRITER_DATABASE: ${{ secrets.TMP_DBWRITER_DATABASE }}
           TMP_DBWRITER_USERNAME: ${{ secrets.TMP_DBWRITER_USERNAME }}
           TMP_DBWRITER_PASSWORD: ${{ secrets.TMP_DBWRITER_PASSWORD }}
-        run: pytest --cov=./ --cov-report=xml python
+        run: |
+          export PATH=$HOME/.local/bin:$PATH
+          pytest --cov=./ --cov-report=xml python
 
-      #- name: Upload coverage
-      #  uses: codecov/codecov-action@v1
+      - name: Upload coverage
+        uses: codecov/codecov-action@v1

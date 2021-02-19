@@ -25,16 +25,12 @@ from botocore import UNSIGNED
 from botocore.client import Config
 from botocore.exceptions import ClientError
 
+
 def import_logfile(auth, logfile, args):
     # see if the schema is present. If not, send it with the wipe command
-    db = dbfile.CBMySQL(auth)
+    db = dbfile.DBMySQL(auth)
     cursor = db.cursor()
-    try:
-        cursor.execute("SELECT count(*) from downloads")
-    except pymysql.err.ProgrammingError:
-        args.wipe = True
-    if args.wipe:
-        weblog.schema.send_schema(cursor)
+    cursor.execute("SELECT count(*) from downloads")
     with open(logfile) as f:
         for line in f:
             obj = weblog.weblog.Weblog(line)
