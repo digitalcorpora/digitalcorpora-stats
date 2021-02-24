@@ -55,10 +55,10 @@ def import_s3obj(obj):
         dbfile.DBMySQL.csfr(auth, cmd, vals)
     except pymysql.err.IntegrityError as e:
         if e.args[0]==1062:
-            # It already exists. If the ETag hasn't changed, just return
-            rows = dbfile.DBMySQL.csfr(auth, "SELECT ETag from downloadable where s3key=%s", (s3key,))
+            # It already exists. If the ETag hasn't changed and we have both sha2_256 and sha3_256, just return
+            rows = dbfile.DBMySQL.csfr(auth, "SELECT ETag from downloadable where s3key=%s and (sha2_256 is not null) and (sha3_256 is not null)", (s3key,))
             if len(rows)==1 and rows[0][0]==obj['ETag']:
-                logging.info('no update %s',s3key)
+                logging.info('ETag matches; will not update %s',s3key)
                 return None
         else:
             raise(e)
@@ -124,7 +124,7 @@ def import_s3prefix(auth, s3prefix, threads=40):
                     already_hashed +=1
                     if t1!=t2:
                        logging.info("set mtime in database for %s from %s to %s for etag %s",obj['Key'],t2,t1,obj['ETag'])
-                       dbfile.DBMySQL.csfr( auth2, "update downloadable set mtime=%s where etag=%s",(t1,obj['ETag']))
+                       dbfile.DBMySQL.csfr( auth2, "update downloadable set mtime=%s where s3key=%s and etag=%s",(t1,obj['Key'],obj['ETag']))
                     continue
             except KeyError as e:
                 pass
