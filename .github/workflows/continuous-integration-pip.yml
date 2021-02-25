@@ -13,30 +13,22 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v2
+        with:
+          submodules:true
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v1
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install dependencies
+
+      - name: Update GITHUB_PATH and install dependencies
         run: |
-          export PATH=$HOME/.local/bin:$PATH
-          printenv
-          python -m pip install --upgrade pip
-          pip install --user -r requirements.txt
-          pip install --user -r requirements-dev.txt
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          make install-dependencies
+          find . -print
 
-      - name: Lint with flake8
-        run: |
-          export PATH=$HOME/.local/bin:$PATH
-
-          # stop the build if there are Python syntax errors or undefined names
-          flake8 python --count --select=E9,F63,F7,F82,W91,W293,W391 --show-source --statistics
-
-          # all Python files should follow PEP8 (except some notebooks, see setup.cfg)
-          flake8 python
-
-          # exit-zero treats all errors as warnings.  The GitHub editor is 127 chars wide
-          flake8 python --count --exit-zero --max-complexity=10 --statistics
+      - name: Lint with pylint
+        run: pylint -j0 .
 
       #- name: Install from source (required for the pre-commit tests)
       #  run: pip install .
@@ -48,8 +40,7 @@ jobs:
           TMP_DBWRITER_USERNAME: ${{ secrets.TMP_DBWRITER_USERNAME }}
           TMP_DBWRITER_PASSWORD: ${{ secrets.TMP_DBWRITER_PASSWORD }}
         run: |
-          export PATH=$HOME/.local/bin:$PATH
-          pytest --cov=./ --cov-report=xml python
+          make coverage
 
       - name: Upload coverage
         uses: codecov/codecov-action@v1
