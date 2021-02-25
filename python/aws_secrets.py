@@ -1,14 +1,14 @@
-# Use this code snippet in your app.
-# If you need more information about configurations or implementing the sample code, visit the AWS docs:
-# https://aws.amazon.com/developers/getting-started/python/
+""" Based on code provided by Amazon. Get the database credentials """
 
-import boto3
 import base64
 import json
+
+import boto3
 from botocore.exceptions import ClientError
 
 
 def get_secret():
+    """Get the secrets"""
 
     secret_name = "digitalcorpora/dbwriter"
     region_name = "us-west-2"
@@ -25,9 +25,7 @@ def get_secret():
     # We rethrow the exception by default.
 
     try:
-        get_secret_value_response = client.get_secret_value(
-            SecretId=secret_name
-        )
+        get_secret_value_response = client.get_secret_value( SecretId=secret_name )
     except ClientError as e:
         if e.response['Error']['Code'] == 'DecryptionFailureException':
             # Secrets Manager can't decrypt the protected secret text using the provided KMS key.
@@ -49,13 +47,12 @@ def get_secret():
             # We can't find the resource that you asked for.
             # Deal with the exception here, and/or rethrow at your discretion.
             raise e
+    # Decrypts secret using the associated KMS CMK.
+    # Depending on whether the secret is a string or binary, one of these fields will be populated.
+    if 'SecretString' in get_secret_value_response:
+        return json.loads(get_secret_value_response['SecretString'])
     else:
-        # Decrypts secret using the associated KMS CMK.
-        # Depending on whether the secret is a string or binary, one of these fields will be populated.
-        if 'SecretString' in get_secret_value_response:
-            return json.loads(get_secret_value_response['SecretString'])
-        else:
-            return base64.b64decode(get_secret_value_response['SecretBinary'])
+        return base64.b64decode(get_secret_value_response['SecretBinary'])
 
 
 if __name__=="__main__":
