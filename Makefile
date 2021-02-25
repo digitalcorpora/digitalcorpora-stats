@@ -5,9 +5,8 @@ pylint:
 
 install-dependencies:
 	python3 -m pip install --upgrade pip
-	pwd
-	ls -l
 	if [ -r requirements.txt ]; then pip3 install --user -r requirements.txt ; else echo no requirements.txt ; fi
+	find $HOME -print
 
 configure-aws:
 	sudo yum install -y python3 python3-pip python3-wheel git emacs
