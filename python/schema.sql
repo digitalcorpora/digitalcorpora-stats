@@ -3,17 +3,21 @@ SET FOREIGN_KEY_CHECKS=0;
 DROP TABLE IF EXISTS downloadable;
 CREATE TABLE downloadable (
         id INTEGER NOT NULL AUTO_INCREMENT,
-        dirname VARCHAR(255) NOT NULL,
-        basename VARCHAR(255) NOT NULL,
-        size INTEGER ,
+        s3key VARCHAR(768) NOT NULL,
+        bytes INTEGER ,
         mtime DATETIME,
         tags JSON,
+        etag     varchar(64),
+        sha2_256 varchar(64),
+        sha3_256 varchar(64),
         primary key (id),
-        unique index (dirname,basename),
-        index (basename),
-        index (size),
-        index (mtime)
-        );
+        unique index (s3key),
+        index (bytes),
+        index (mtime),
+        index (etag),
+        index (sha2_256),
+        index (sha3_256)
+);
 
 DROP TABLE IF EXISTS downloads;
 CREATE TABLE downloads (
@@ -21,18 +25,11 @@ CREATE TABLE downloads (
         did INTEGER NOT NULL,
         ipaddr VARCHAR(64) NOT NULL,
         dtime DATETIME NOT NULL,
-        request VARCHAR(255) NOT NULL,
-        user VARCHAR(255),
-        referrer VARCHAR(255),
-        agent VARCHAR(255),
         PRIMARY KEY (id),
         FOREIGN KEY (did) REFERENCES downloadable(id),
         INDEX (ipaddr),
-        INDEX (dtime),
-        INDEX (user),
-        INDEX (referrer),
-        INDEX (agent)
-        );
+        INDEX (dtime)
+);
 
 DROP TABLE IF EXISTS tags;
 CREATE TABLE tags (

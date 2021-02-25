@@ -1,11 +1,15 @@
-check:
-	pytest --cov=./ --cov-report=xml python
-	flake8 python --count --select=E9,F63,F7,F82,W91 --show-source --statistics --exit-zero --max-complexity=10
+pylint:
+	(cd python; make pylint)
 
+install-dependencies:
+	python3 -m pip install --upgrade pip
+	if [ -r requirements.txt ]; then pip3 install --user -r requirements.txt ; else echo no requirements.txt ; fi
+	find $(HOME) -print
 
 configure-aws:
-	@echo install packages on aws necessary for development. Indempotent 
-	sudo yum install -y git emacs python3 python3-pip zsh
-	git config --global push.default current
-	pip3 install --user -r requirements.txt
-	pip3 install --user -r requirements-dev.txt
+	sudo yum install -y python3 python3-pip python3-wheel git emacs
+	git config --global pager.branch false
+	make install-dependencies
+
+coverage:
+	(cd python;pytest --debug -v --cov=. --cov-report=xml tests/) || echo pytest failed
