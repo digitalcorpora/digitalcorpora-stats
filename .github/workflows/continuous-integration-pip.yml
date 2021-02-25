@@ -25,7 +25,6 @@ jobs:
         run: |
           echo "$HOME/.local/bin" >> $GITHUB_PATH
           make install-dependencies
-          find . -print
 
       - name: Lint with pylint
         run: pylint -j0 .
@@ -33,7 +32,7 @@ jobs:
       #- name: Install from source (required for the pre-commit tests)
       #  run: pip install .
 
-      - name: Test with pytest and SECRETS
+      - name: Test with pytest and SECRETS and coverage report
         env:
           TMP_DBWRITER_HOSTNAME: ${{ secrets.TMP_DBWRITER_HOSTNAME }}
           TMP_DBWRITER_DATABASE: ${{ secrets.TMP_DBWRITER_DATABASE }}

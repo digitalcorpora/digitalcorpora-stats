@@ -1,6 +1,7 @@
 python-dateutil
 pymysql
 boto3
+pylint
 pytest
 pytest-cov
 black
