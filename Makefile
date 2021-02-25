@@ -1,4 +1,4 @@
-PYLINT_FILES=$(shell /bin/ls *.py  | grep -v bottle.py | grep -v app_wsgi.py)
+PYLINT_FILES=$(shell cd python; /bin/ls *.py  | grep -v bottle.py | grep -v app_wsgi.py)
 
 lint:
 	(cd python; pylint $(PYLINT_FILES))
