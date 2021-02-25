@@ -28,7 +28,7 @@ jobs:
 
       - name: Lint with pylint
         run: |
-          make lint
+          make pylint
 
       #- name: Install from source (required for the pre-commit tests)
       #  run: pip install .

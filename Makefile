@@ -1,7 +1,5 @@
-PYLINT_FILES=$(shell cd python; /bin/ls *.py  | grep -v bottle.py | grep -v app_wsgi.py)
-
-lint:
-	(cd python; pylint $(PYLINT_FILES))
+pylint:
+	(cd python; make pylint)
 
 install-dependencies:
 	python3 -m pip install --upgrade pip

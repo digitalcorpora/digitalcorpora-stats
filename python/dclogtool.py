@@ -5,28 +5,29 @@ digitalcorpora log tool.
 """
 
 import os
+import urllib.parse
+import hashlib
+import multiprocessing
+import logging
+import copy
+import time
+
+import boto3
 import pymysql
+
+from botocore import UNSIGNED
+from botocore.client import Config
+#from botocore.exceptions import ClientError
+
 import weblog.schema
 import weblog.weblog
 import aws_secrets
 import ctools.dbfile as dbfile
 import ctools.clogging as clogging
-import urllib.parse
-import boto3
-import hashlib
-import multiprocessing
-import json
-import logging
-import pickle
-import copy
-import time
-
-from botocore import UNSIGNED
-from botocore.client import Config
-from botocore.exceptions import ClientError
 
 
-def import_logfile(auth, logfile, args):
+
+def import_logfile(auth, logfile):
     # see if the schema is present. If not, send it with the wipe command
     db = dbfile.DBMySQL(auth)
     cursor = db.cursor()
@@ -62,7 +63,7 @@ def import_s3obj(obj):
                 logging.info('ETag matches; will not update %s', s3key)
                 return None
         else:
-            raise(e)
+            raise e
 
     # Get a handle to the s3 file
     s3client  = boto3.client('s3', config=Config(signature_version=UNSIGNED))
@@ -127,6 +128,7 @@ def import_s3prefix(auth, s3prefix, threads=40):
                         logging.info("set mtime in database for %s from %s to %s for etag %s", obj['Key'], t2, t1, obj['ETag'])
                         dbfile.DBMySQL.csfr(auth2, "update downloadable set mtime=%s where s3key=%s and etag=%s", (t1, obj['Key'], obj['ETag']))
                     continue
+            # pylint: disable=W0612
             except KeyError as e:
                 pass
 
@@ -184,7 +186,7 @@ if __name__ == "__main__":
         db.create_schema(open("schema.sql", "r").read())
 
     if args.logfile:
-        import_logfile(auth, args.logfile, args)
+        import_logfile(auth, args.logfile)
 
     if args.s3prefix:
         import_s3prefix(auth, args.s3prefix, threads=args.threads)
