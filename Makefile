@@ -12,4 +12,7 @@ configure-aws:
 	make install-dependencies
 
 coverage:
-	(cd python;pytest --debug -v --cov=. --cov-report=xml tests/) || echo pytest failed
+	cd python;pytest --debug -v --cov=. --cov-report=xml tests/
+
+pytest:
+	cd python; make pytest
