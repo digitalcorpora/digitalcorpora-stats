@@ -144,7 +144,7 @@ def import_s3prefix(auth, s3prefix, threads=40):
     else:
         with multiprocessing.Pool(threads) as p:
             p.map(import_s3obj, objs)
->>>>>>> master
+
 
 
 if __name__ == "__main__":
