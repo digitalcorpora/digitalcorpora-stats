@@ -8,3 +8,8 @@ configure-aws:
 	python3 -m pip install --upgrade pip
 	pip3 install --user -r requirements.txt
 	pip3 install --user -r requirements-dev.txt
+
+install:
+	python3 -m pip install --upgrade pip
+	if [ -r requirements.txt ]; then pip3 install --user -r requirements.txt ; fi
+	if [ -r requirements-dev.txt ]; then pip3 install --user -r requirements-dev.txt ; fi

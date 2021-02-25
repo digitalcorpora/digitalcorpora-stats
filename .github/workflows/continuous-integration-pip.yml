@@ -1,4 +1,5 @@
 # This file based on https://gist.github.com/mwouts/9842452d020c08faf9e84a3bba38a66f
+# 2020-02-20 slg - For Dreamhost, we are now using Python 3.9 and Ubuntu-18.04
 
 name: CI (pip)
 on: [push]
@@ -7,8 +8,8 @@ jobs:
   build:
     strategy:
       matrix:
-        os: ['ubuntu-latest', 'macos-latest']
-        python-version: [3.8]
+        os: ['ubuntu-18.04', 'macos-latest']
+        python-version: [3.8, 3.9]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -25,23 +26,15 @@ jobs:
           pip install --user -r requirements.txt
           pip install --user -r requirements-dev.txt
 
-      - name: Lint with flake8
+      - name: Lint with pylint
         run: |
           export PATH=$HOME/.local/bin:$PATH
-
-          # stop the build if there are Python syntax errors or undefined names
-          flake8 python --count --select=E9,F63,F7,F82,W91,W293,W391 --show-source --statistics
-
-          # all Python files should follow PEP8 (except some notebooks, see setup.cfg)
-          flake8 python
-
-          # exit-zero treats all errors as warnings.  The GitHub editor is 127 chars wide
-          flake8 python --count --exit-zero --max-complexity=10 --statistics
+          pylint python
 
       #- name: Install from source (required for the pre-commit tests)
       #  run: pip install .
 
-      - name: Test with pytest and SECRETS
+      - name: Test with pytest
         env:
           TMP_DBWRITER_HOSTNAME: ${{ secrets.TMP_DBWRITER_HOSTNAME }}
           TMP_DBWRITER_DATABASE: ${{ secrets.TMP_DBWRITER_DATABASE }}
