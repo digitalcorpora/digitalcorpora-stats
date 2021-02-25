@@ -1,6 +1,6 @@
 PYLINT_FILES=$(shell /bin/ls *.py  | grep -v bottle.py | grep -v app_wsgi.py)
 
-pylint:
+lint:
 	(cd python; pylint $(PYLINT_FILES))
 
 install-dependencies:

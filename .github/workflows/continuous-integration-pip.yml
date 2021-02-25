@@ -27,7 +27,8 @@ jobs:
           make install-dependencies
 
       - name: Lint with pylint
-        run: pylint -j0 .
+        run: |
+          make lint
 
       #- name: Install from source (required for the pre-commit tests)
       #  run: pip install .
