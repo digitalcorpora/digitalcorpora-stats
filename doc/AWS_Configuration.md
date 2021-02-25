@@ -14,5 +14,7 @@ How we are set up with AWS
 * AWS Lambda
   - Not in use yet; will use for automatically hashing new files as they are uploaded to S3
 
-* EC2 instance is launched with the IAM role DCStats
-* IAM Role has access to
+* MyWebApplication Role
+  - SecretsManagerReadWrite, AmazonS3ReadOnlyAccess, AmazonDynamoDBFullAccess
+* Lambda is launched with the IAM role DCStatsRole (for Lambda)
+  - IAM Role DCStats has access to: SecretsManagerReadWrite, AmazonS3ReadOnlyAccess, AmazonDynamoDBFullAccess
