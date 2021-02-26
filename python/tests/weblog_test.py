@@ -22,7 +22,7 @@ def test_line1():
     assert log.method == 'GET'
     assert log.url == '/'
     assert log.result == 401
-    assert log.size == 4110
+    assert log.bytes == 4110
     assert log.referrer == '-'
     assert log.agent == "Mozilla/5.0 (compatible; YandexBot/3.0; +http://yandex.com/bots)"
     assert log.is_download() is False
@@ -37,7 +37,7 @@ def test_line2():
     assert log.method == 'GET'
     assert log.url == '/downloads/tcpflow/'
     assert log.result == 200
-    assert log.size == 971
+    assert log.bytes == 971
     assert log.referrer == '-'
     assert log.agent == "Anitya 0.15.1 at release-monitoring.org"
     assert log.is_download() is False
@@ -52,7 +52,7 @@ def test_line3():
     assert log.method == 'GET'
     assert log.url == '/corpora/scenarios/2009-m57-patents/'
     assert log.result == 200
-    assert log.size == 3812
+    assert log.bytes == 3812
     assert log.referrer == 'http://downloads.digitalcorpora.org/corpora/scenarios/2009-m57-patents/drives-redacted/'
     assert log.agent == "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36"
     assert log.is_download() is False
