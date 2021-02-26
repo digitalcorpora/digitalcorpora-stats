@@ -2,4 +2,4 @@ pylint:
 	pylint --rcfile .pylintrc  --verbose  *.py
 
 pytest:
-	python -m pytest .
+	python3 -m pytest .
