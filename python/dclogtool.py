@@ -21,9 +21,11 @@ from botocore.client import Config
 
 import weblog.schema
 import weblog.weblog
+
 import aws_secrets
 import ctools.dbfile as dbfile
 import ctools.clogging as clogging
+
 
 
 
@@ -36,7 +38,6 @@ def import_logfile(auth, logfile):
         for line in f:
             obj = weblog.weblog.Weblog(line)
             weblog.schema.send_weblog(cursor, obj)
-
 
 BUFSIZE=65536
 def import_s3obj(obj):
@@ -143,6 +144,7 @@ def import_s3prefix(auth, s3prefix, threads=40):
     else:
         with multiprocessing.Pool(threads) as p:
             p.map(import_s3obj, objs)
+
 
 
 if __name__ == "__main__":

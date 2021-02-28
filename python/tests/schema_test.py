@@ -20,9 +20,6 @@ def test_schema():
     from weblog.schema import get_schema
     assert "CREATE TABLE" in get_schema()
 
-
-
-
 TMP_DBWRITER_HOSTNAME='TMP_DBWRITER_HOSTNAME'
 TMP_DBWRITER_DATABASE='TMP_DBWRITER_DATABASE'
 TMP_DBWRITER_USERNAME='TMP_DBWRITER_USERNAME'

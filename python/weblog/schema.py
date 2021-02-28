@@ -28,12 +28,9 @@ def send_weblog(cursor, obj):
     from weblog.weblog import Weblog
     assert isinstance(obj, Weblog)
     if obj.is_download():
-        path = obj.path
-        prefix  = os.path.dirname(path)
-        basename = os.path.basename(path)
-        cursor.execute("INSERT INTO downloadable (prefix,basename,size) VALUES (%s,%s,%s) ON DUPLICATE KEY UPDATE size=size",
-                       (prefix, os.path.basename(path), obj.size))
+        cursor.execute("INSERT INTO downloadable (s3key,bytes) VALUES (%s,%s) ON DUPLICATE KEY UPDATE bytes=bytes",
+                       (obj.path, obj.bytes))
         cursor.execute("COMMIT")
-        cursor.execute("INSERT INTO downloads (did, ipaddr, dtime) VALUES ((select id from downloadable where prefix=%s and basename=%s), %s, %s)",
-                       (prefix, basename, obj.ipaddr, obj.dtime))
+        cursor.execute("INSERT INTO downloads (did, ipaddr, dtime) VALUES ((select id from downloadable where s3key=%s), %s, %s)",
+                       (obj.path, obj.ipaddr, obj.dtime))
         cursor.execute("COMMIT")

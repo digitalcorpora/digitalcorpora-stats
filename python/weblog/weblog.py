@@ -15,7 +15,7 @@ class Weblog(object):
     See https://httpd.apache.org/docs/2.4/logs.html for log file format
     """
     __slots__  = ['ipaddr', 'ident', 'user', 'dtime', 'request', 'result',
-                  'size', 'agent', 'referrer', 'method', 'url']
+                  'bytes', 'agent', 'referrer', 'method', 'url']
     CLF_REGEX  = r'([(\d\.):]+) ([^ ]+) ([^ ]+) \[(.*)\] "(.*)" (\d+) (\d+|-)( "[^"]*")?( "[^"]*")?'
     CLF_RE     = re.compile(CLF_REGEX)
     WIKIPAGE_PATS = [re.compile(x) for x in [r"index.php\?title=([^ &]*)", "/wiki/([^ &]*)"]]
@@ -33,9 +33,9 @@ class Weblog(object):
         self.request   = m.group(5)
         self.result    = int(m.group(6))
         try:
-            self.size      = int(m.group(7))
+            self.bytes  = int(m.group(7))
         except ValueError:
-            self.size  = None
+            self.bytes  = None
         try:
             self.referrer  = m.group(8)[2:-1]  # remove the space and quotes
         except (IndexError, TypeError):

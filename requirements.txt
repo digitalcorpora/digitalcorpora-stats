@@ -1,8 +1,10 @@
+boto3
 python-dateutil
 pymysql
 boto3
 pylint
 pytest
 pytest-cov
+pytest-env
 black
 autopep8
