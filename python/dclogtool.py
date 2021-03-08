@@ -26,8 +26,10 @@ import aws_secrets
 import ctools.dbfile as dbfile
 import ctools.clogging as clogging
 
+year = datetime.datetime.now().year
 
-
+S3_LOG_BUCKET = 'digitalcorpora-logs'
+S3_LOGFILE = os.path.join( os.getenv("HOME"), "s3logs", f"s3logs.{year}.log")
 
 def import_logfile(auth, logfile):
     # see if the schema is present. If not, send it with the wipe command
@@ -104,7 +106,10 @@ def import_s3prefix(auth, s3prefix, threads=40):
     # (Because of MD5 collisions, we check both etag and mtime)
     # We need to use our own auth because we don't want it activated
     auth2 = copy.deepcopy(auth)
-    rows = dbfile.DBMySQL.csfr(auth2, "select s3key,etag,mtime from downloadable where s3key like %s and (sha2_256 is not null) and (sha3_256 is not null) ", (p.path[1:] +"%"))
+    rows = dbfile.DBMySQL.csfr(auth2,
+                               """select s3key,etag,mtime from downloadable
+                               WHERE s3key LIKE %s AND (sha2_256 IS NOT NULL) AND (sha3_256 IS NOT NULL)
+                               """, (p.path[1:] +"%"))
     logging.info("found %d entries in database with hashes", len(rows))
     hashed = {row[0]: {'ETag': row[1], 'mtime': row[2]} for row in rows}
 
@@ -145,6 +150,23 @@ def import_s3prefix(auth, s3prefix, threads=40):
         with multiprocessing.Pool(threads) as p:
             p.map(import_s3obj, objs)
 
+def s3_log_ingest(f, logfile, S3_LOGFILE):
+    """Given a file, ingest each of its records and add to both the database and the logfile"""
+    out = open(S3_LOGFILE,"a")
+    for line in f:
+        out.write(line)
+
+
+
+def s3_logs_download():
+    """Download an S3 logs and ingest them"""
+    s3client  = boto3.client('s3', config=Config(signature_version=UNSIGNED))
+    paginator = s3client.get_paginator('list_objects_v2')
+    pages = paginator.paginate(Bucket=p.netloc, Prefix=p.path[1:])
+    for page in pages:
+        for obj in page.get('Contents'):
+            s3_log_ingest(obj['Key'])
+
 
 
 if __name__ == "__main__":
@@ -157,6 +179,7 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action='store_true')
     parser.add_argument("--s3prefix", help="Scan an S3 prefix")
     parser.add_argument("--threads", "-j", type=int, default=1)
+    parser.add_argument("--s3_download", action='store_true', help='download S3 logs to local directory, combine into local logfile')
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--aws", help="Get database password from aws secrets system", action='store_true')
     g.add_argument("--env", help="Get database password from environment variables", action='store_true')
