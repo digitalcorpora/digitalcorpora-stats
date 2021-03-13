@@ -10,9 +10,16 @@ S3Log is a sublcass which can do S3logs.
 
 import re
 import dateutil.parser
-from urllib.parse import urlparse
+import urllib.parse
 
 REST_GET_OBJECT='REST.GET.OBJECT'
+REST_PUT_PART='REST.PUT.PART'
+
+def safe_int(s):
+    try:
+        return int(s)
+    except ValueError:
+        return None
 
 class Weblog:
     """Class that parses an Apache Combined Log File format file and returns tuple.
@@ -35,11 +42,8 @@ class Weblog:
         self.user      = m.group(3)
         self.dtime     = dateutil.parser.parse(m.group(4).replace(':', ' ', 1))
         self.request   = m.group(5)
-        self.result    = int(m.group(6))
-        try:
-            self.bytes  = int(m.group(7))
-        except ValueError:
-            self.bytes  = None
+        self.result    = safe_int(m.group(6))
+        self.bytes     = safe_int(m.group(7))
         try:
             self.referrer  = m.group(8)[2:-1]  # remove the space and quotes
         except (IndexError, TypeError):
@@ -67,7 +71,7 @@ class Weblog:
 
     @property
     def path(self):
-        o = urlparse(self.url)
+        o = urllib.parse.urlparse(self.url)
         return o.path
 
     def is_download(self):
@@ -120,13 +124,14 @@ class S3Log:
     """
 
     def __init__(self, line):
+        """Double-unquoting seems required, although it's weird."""
         parts = self.S3_RE.findall(line)
         self.bucket_owner = parts[0][2]
         self.bucket       = parts[1][2]
         self.time         = dateutil.parser.parse(parts[2][1].replace(":"," ",1))
         self.remote_ip    = parts[3][2]
         self.operation    = parts[6][2]
-        self.key          = parts[7][2]
-        self.bytes_sent   = int(parts[11][2])
-        self.object_size  = int(parts[12][2])
+        self.key          = urllib.parse.unquote(urllib.parse.unquote(parts[7][2]))
+        self.bytes_sent   = safe_int(parts[11][2])
+        self.object_size  = safe_int(parts[12][2])
         self.user_agent   = parts[16][0]

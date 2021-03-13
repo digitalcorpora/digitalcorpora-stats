@@ -11,6 +11,10 @@ import multiprocessing
 import logging
 import copy
 import time
+import datetime
+import codecs
+import queue
+import threading
 
 import boto3
 import pymysql
@@ -54,7 +58,7 @@ def import_s3obj(obj):
     s3key  = obj['Key']
     # Make sure that this object is in the database.
 
-    cmd  = "insert into downloadable (s3key,bytes,mtime,etag) values (%s,%s,%s,%s)"
+    cmd  = "INSERT INTO DOWNLOADABLE (s3key,bytes,mtime,etag) values (%s,%s,%s,%s)"
     vals = (s3key, obj['Size'], obj['LastModified'], obj['ETag'])
     try:
         dbfile.DBMySQL.csfr(auth, cmd, vals)
@@ -131,8 +135,11 @@ def import_s3prefix(auth, s3prefix, threads=40):
                     logging.debug('Already hashed in database: %s', obj['Key'])
                     already_hashed +=1
                     if t1!=t2:
-                        logging.info("set mtime in database for %s from %s to %s for etag %s", obj['Key'], t2, t1, obj['ETag'])
-                        dbfile.DBMySQL.csfr(auth2, "update downloadable set mtime=%s where s3key=%s and etag=%s", (t1, obj['Key'], obj['ETag']))
+                        logging.info("set mtime in database for %s from %s to %s for etag %s",
+                                     obj['Key'], t2, t1, obj['ETag'])
+                        dbfile.DBMySQL.csfr(auth2,
+                                            "UPDATE downloadable SET mtime=%s WHERE s3key=%s AND etag=%s",
+                                            (t1, obj['Key'], obj['ETag']))
                     continue
             # pylint: disable=W0612
             except KeyError as e:
@@ -150,22 +157,124 @@ def import_s3prefix(auth, s3prefix, threads=40):
         with multiprocessing.Pool(threads) as p:
             p.map(import_s3obj, objs)
 
-def s3_log_ingest(f, logfile, S3_LOGFILE):
+def add_database(auth, obj):
+    """ First make sure that it's in downloads and get its ID.
+    Note that the downloads are tracked by key, even though the object identified by the key may change.
+    """
+    if args.verbose:
+        print(obj)
+    try:
+        dbfile.DBMySQL.csfr(auth,
+                            """INSERT INTO downloadable (s3key, bytes) VALUES (%s,%s) """,
+                            (obj.key, obj.object_size), nolog=[1062])
+    except pymysql.err.IntegrityError as e:
+        if e.args[0]==1062:
+            # It already exists.
+            pass
+        else:
+            raise RuntimeError(e)
+    # Now add the download
+    r = dbfile.DBMySQL.csfr(auth,
+                        """
+                        INSERT INTO downloads (did, ipaddr, dtime)
+                        VALUES ((select id from downloadable where s3key=%s),%s,%s)
+                        """,
+                        (obj.key, obj.remote_ip, obj.time))
+    if args.verbose:
+        print(r,obj.key,obj.remote_ip,obj.time)
+
+
+def s3_logfile_ingest(auth, f):
+    added = 0
+    seen_dates = set()
+    for (ct,line) in enumerate(f):
+        if (auth.debug or args.verbose) and ct%1000==0:
+            print(f"{ct} {added} added...")
+        obj = weblog.weblog.S3Log(line)
+        if args.verbose and obj.time.date() not in seen_dates:
+            print(obj.time.date())
+            seen_dates.add(obj.time.date())
+        if obj.operation == weblog.weblog.REST_GET_OBJECT:
+            add_database(auth, obj)
+            added += 1
+        elif obj.operation == weblog.weblog.REST_PUT_PART or obj.operation== 'REST.PUT.OBJECT':
+            continue
+        elif obj.operation == 'REST.GET.BUCKET':
+            continue
+        elif obj.operation == 'REST.POST.UPLOAD' or obj.operation == 'REST.POST.UPLOADS':
+            continue
+        elif obj.operation in ['REST.GET.ACL',
+                               'REST.GET.PUBLIC_ACCESS_BLOCK',
+                               'REST.GET.INTELLIGENT_TIERING',
+                               'REST.PUT.BUCKETPOLICY',
+                               'REST.GET.CORS',
+                               'REST.GET.POLICY_STATUS',
+                               'REST.GET.TAGGING',
+                               'REST.GET.ACCELERATE',
+                               'REST.GET.INVENTORY',
+                               'REST.GET.VERSIONING',
+                               'REST.GET.WEBSITE',
+                               'REST.GET.OWNERSHIP_CONTROLS',
+                               'REST.GET.BUCKETPOLICY',
+                               'REST.GET.LOGGING_STATUS',
+                               'REST.PUT.NOTIFICATION',
+                               'REST.GET.BUCKETVERSIONS',
+                               'REST.HEAD.BUCKET',
+                               'REST.PUT.METRICS',
+                               'REST.PUT.LOGGING_STATUS',
+                               'REST.GET.NOTIFICATION',
+                               'REST.GET.REPLICATION',
+                               'REST.GET.REQUEST_PAYMENT',
+                               'REST.GET.ENCRYPTION',
+                               'REST.GET.OBJECT_LOCK_CONFIGURATION',
+                               'REST.PUT.VERSIONING',
+                               'REST.GET.LIFECYCLE']:
+
+
+            continue
+        else:
+            print(obj.operation)
+
+def s3_log_ingest(auth, key, archive=S3_LOGFILE):
     """Given a file, ingest each of its records and add to both the database and the logfile"""
-    out = open(S3_LOGFILE,"a")
-    for line in f:
-        out.write(line)
+    with open(S3_LOGFILE,"a") as out:
+        s3client  = boto3.client('s3')
+        o2   = s3client.get_object(Bucket=S3_LOG_BUCKET, Key=key)
+        line_stream = codecs.getreader("utf-8")
+        for line in line_stream(o2['Body']):
+            obj = weblog.weblog.S3Log(line)
+            if obj.operation == weblog.weblog.REST_GET_OBJECT:
+                add_database(auth, obj)
 
 
+def s3_logs_download(auth, args):
+    """Download an S3 logs and ingest them.
+    This requires authentication, since access to the log is not open.
+    """
 
-def s3_logs_download():
-    """Download an S3 logs and ingest them"""
-    s3client  = boto3.client('s3', config=Config(signature_version=UNSIGNED))
+    q = queue.Queue()
+
+    def worker():
+        auth2 = copy.deepcopy(auth) # thread local auth
+        while True:
+            key = q.get()
+            s3_log_ingest(auth2, key)
+            q.task_done()
+
+    # Start the threads
+    for i in range(args.threads):
+        threading.Thread(target=worker, daemon=True).start()
+    s3client  = boto3.client('s3')
     paginator = s3client.get_paginator('list_objects_v2')
-    pages = paginator.paginate(Bucket=p.netloc, Prefix=p.path[1:])
+    pages = paginator.paginate(Bucket=S3_LOG_BUCKET, Prefix='')
     for page in pages:
         for obj in page.get('Contents'):
-            s3_log_ingest(obj['Key'])
+            q.put(obj['Key'])
+    # Block until all tasks are done
+    # Don't bother killing the workers.
+    q.join()
+
+
 
 
 
@@ -175,11 +284,16 @@ if __name__ == "__main__":
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--wipe", help="Wipe database and load a new schema", action='store_true')
     parser.add_argument("--prod", help="Use production database", action='store_true')
-    parser.add_argument("--logfile", help="Log file to import")
     parser.add_argument("--debug", action='store_true')
-    parser.add_argument("--s3prefix", help="Scan an S3 prefix")
+    parser.add_argument("--verbose", action='store_true')
     parser.add_argument("--threads", "-j", type=int, default=1)
-    parser.add_argument("--s3_download", action='store_true', help='download S3 logs to local directory, combine into local logfile')
+    g = parser.add_mutually_exclusive_group(required=True)
+    g.add_argument("--logfile", help="Log file to import")
+    g.add_argument("--s3prefix", help="Scan an S3 prefix")
+    g.add_argument("--s3_download_ingest", action='store_true',
+                        help='download S3 logs to local directory, combine into local logfile, and ingest')
+    g.add_argument("--s3_logfile_ingest",
+                        help='ingest an already downloaded s3 logfile')
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--aws", help="Get database password from aws secrets system", action='store_true')
     g.add_argument("--env", help="Get database password from environment variables", action='store_true')
@@ -201,9 +315,11 @@ if __name__ == "__main__":
         auth = dbfile.DBMySQLAuth(host=os.environ['DBWRITER_HOSTNAME'],
                                   database=database,
                                   user=os.environ['DBWRITER_USERNAME'],
-                                  password=os.environ['DBWRITER_PASSWORD'])
+                                  password=os.environ['DBWRITER_PASSWORD'],
+                                  debug=args.debug
+                                  )
 
-    if args.debug:
+    if auth.debug:
         print("auth:", auth)
 
     if args.wipe:
@@ -212,6 +328,11 @@ if __name__ == "__main__":
 
     if args.logfile:
         import_logfile(auth, args.logfile)
-
-    if args.s3prefix:
+    elif args.s3prefix:
         import_s3prefix(auth, args.s3prefix, threads=args.threads)
+    elif args.s3_download_ingest:
+        s3_logs_download(auth, args)
+    elif args.s3_logfile_ingest:
+        s3_logfile_ingest( auth, open(args.s3_logfile_ingest))
+    else:
+        raise RuntimeError("Unknown action")
