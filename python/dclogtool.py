@@ -35,7 +35,7 @@ year = datetime.datetime.now().year
 S3_LOG_BUCKET = 'digitalcorpora-logs'
 S3_LOGFILE = os.path.join( os.getenv("HOME"), "s3logs", f"s3logs.{year}.log")
 
-def import_logfile(auth, logfile):
+def import_apache_logfile(auth, logfile):
     # see if the schema is present. If not, send it with the wipe command
     db = dbfile.DBMySQL(auth)
     cursor = db.cursor()
@@ -102,7 +102,7 @@ def import_s3obj(obj):
     logging.info('updated %s.  %d bytes, %6.2f seconds.  (%d bytes/sec)', s3key, bytes_hashed, (t1 -t0), bytes_hashed /(t1 -t0))
     return s3key
 
-def import_s3prefix(auth, s3prefix, threads=40):
+def hash_s3prefix(auth, s3prefix, threads=40):
     """Because we can enumerate all of digitalcorpora in 3 seconds, we do that here. We then request hashing using python's multiprocessing module"""
     p = urllib.parse.urlparse(s3prefix)
 
@@ -161,8 +161,7 @@ def add_database(auth, obj):
     """ First make sure that it's in downloads and get its ID.
     Note that the downloads are tracked by key, even though the object identified by the key may change.
     """
-    if args.verbose:
-        print(obj)
+    logging.info("obj: %s",obj)
     try:
         dbfile.DBMySQL.csfr(auth,
                             """INSERT INTO downloadable (s3key, bytes) VALUES (%s,%s) """,
@@ -180,8 +179,7 @@ def add_database(auth, obj):
                         VALUES ((select id from downloadable where s3key=%s),%s,%s)
                         """,
                         (obj.key, obj.remote_ip, obj.time))
-    if args.verbose:
-        print(r,obj.key,obj.remote_ip,obj.time)
+    logging.info("r=%s key=%s remote_ip=%s time=%s",r,obj.key,obj.remote_ip,obj.time)
 
 
 def s3_logfile_ingest(auth, f):
@@ -235,8 +233,12 @@ def s3_logfile_ingest(auth, f):
         else:
             print(obj.operation)
 
-def s3_log_ingest(auth, key, archive=S3_LOGFILE):
-    """Given a file, ingest each of its records and add to both the database and the logfile"""
+def s3_log_ingest(auth, key):
+    """Given an s3 key, ingest each of its records, and them to the databse, and then delete it.
+    :param auth: authentication token to write to the database
+    :param key: key of the logfile
+    """
+    logging.info("%s",key)
     with open(S3_LOGFILE,"a") as out:
         s3client  = boto3.client('s3')
         o2   = s3client.get_object(Bucket=S3_LOG_BUCKET, Key=key)
@@ -245,13 +247,14 @@ def s3_log_ingest(auth, key, archive=S3_LOGFILE):
             obj = weblog.weblog.S3Log(line)
             if obj.operation == weblog.weblog.REST_GET_OBJECT:
                 add_database(auth, obj)
+        s3client.delete_object(Bucket=S3_LOG_BUCKET, Key=key)
 
 
-def s3_logs_download(auth, args):
+def s3_logs_download(auth, threads=1):
     """Download an S3 logs and ingest them.
-    This requires authentication, since access to the log is not open.
+    :param auth: authentication token to write to the database.
+    :param threads: number of threads to use
     """
-
     q = queue.Queue()
 
     def worker():
@@ -276,8 +279,6 @@ def s3_logs_download(auth, args):
 
 
 
-
-
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Import the Digital Corpora logs.',
@@ -288,8 +289,8 @@ if __name__ == "__main__":
     parser.add_argument("--verbose", action='store_true')
     parser.add_argument("--threads", "-j", type=int, default=1)
     g = parser.add_mutually_exclusive_group(required=True)
-    g.add_argument("--logfile", help="Log file to import")
-    g.add_argument("--s3prefix", help="Scan an S3 prefix")
+    g.add_argument("--apache_logfile", help="Apache combined log file to import (currently not working)")
+    g.add_argument("--hash_s3prefix", help="Hash all of the new objects under a given S3 prefix")
     g.add_argument("--s3_download_ingest", action='store_true',
                         help='download S3 logs to local directory, combine into local logfile, and ingest')
     g.add_argument("--s3_logfile_ingest",
@@ -300,6 +301,9 @@ if __name__ == "__main__":
     clogging.add_argument(parser)
     args = parser.parse_args()
     clogging.setup(args.loglevel)
+
+    if args.verbose:
+        logging.getLogger().setLevel(logging.INFO)
 
     if args.aws:
         s = aws_secrets.get_secret()
@@ -326,12 +330,12 @@ if __name__ == "__main__":
         db = dbfile.DBMySQL(auth)
         db.create_schema(open("schema.sql", "r").read())
 
-    if args.logfile:
-        import_logfile(auth, args.logfile)
+    if args.apache_logfile:
+        import_apache_logfile(auth, args.apache_logfile)
     elif args.s3prefix:
-        import_s3prefix(auth, args.s3prefix, threads=args.threads)
+        hash_s3prefix(auth, args.s3prefix, threads=args.threads)
     elif args.s3_download_ingest:
-        s3_logs_download(auth, args)
+        s3_logs_download(auth, args.threads)
     elif args.s3_logfile_ingest:
         s3_logfile_ingest( auth, open(args.s3_logfile_ingest))
     else:
