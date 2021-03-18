@@ -157,7 +157,7 @@ def hash_s3prefix(auth, s3prefix, threads=40):
         with multiprocessing.Pool(threads) as p:
             p.map(import_s3obj, objs)
 
-def add_database(auth, obj):
+def add_download(auth, obj):
     """ First make sure that it's in downloads and get its ID.
     Note that the downloads are tracked by key, even though the object identified by the key may change.
     """
@@ -183,26 +183,26 @@ def add_database(auth, obj):
 
 
 seen_dates = set()
-def obj_injest(auth, obj):
-    print(obj)
+def obj_ingest(auth, obj):
     if obj.time.date() not in seen_dates:
         logging.info("%s",obj.time.date())
         seen_dates.add(obj.time.date())
-    if obj.operation == weblog.weblog.REST_GET_OBJECT:
-        add_database(auth, obj)
-    elif obj.operation == 'REST.GET.BUCKET':
-        continue
+    if obj.operation in [
+            'REST.GET.OBJECT',
+            'WEBSITE.GET.OBJECT'
+    ]:
+        add_download(auth, obj)
     elif obj.operation in [
             'REST.PUT.PART',
             'REST.PUT.OBJECT',
             'REST.POST.UPLOAD',
             'REST.POST.UPLOADS',
     ]:
-        print("upload:",obj)
-        continue
+        print("upload:",obj.key)
     elif obj.operation in [
             'REST.GET.ACCELERATE',
             'REST.GET.ACL',
+            'REST.GET.BUCKET',
             'REST.GET.BUCKETPOLICY',
             'REST.GET.BUCKETVERSIONS',
             'REST.GET.CORS',
@@ -210,6 +210,7 @@ def obj_injest(auth, obj):
             'REST.GET.INTELLIGENT_TIERING',
             'REST.GET.INVENTORY',
             'REST.GET.LIFECYCLE',
+            'REST.GET.LOCATION',
             'REST.GET.LOGGING_STATUS',
             'REST.GET.NOTIFICATION',
             'REST.GET.OBJECT_LOCK_CONFIGURATION',
@@ -221,16 +222,25 @@ def obj_injest(auth, obj):
             'REST.GET.TAGGING',
             'REST.GET.VERSIONING',
             'REST.GET.WEBSITE',
+            'REST.GET.ANALYTICS',
+            'REST.HEAD.OBJECT',
+            'WEBSITE.HEAD.OBJECT',
             'REST.HEAD.BUCKET',
             'REST.PUT.BUCKETPOLICY',
             'REST.PUT.LOGGING_STATUS',
             'REST.PUT.METRICS',
             'REST.PUT.NOTIFICATION',
             'REST.PUT.VERSIONING',
+            'REST.PUT.WEBSITE',
     ]:
-        continue
+        pass
+    elif obj.operation in [
+            'S3.TRANSITION_INT.OBJECT',
+    ]:
+        print("S3 Transition: ",obj.key)
+
     else:
-        print(obj.operation)
+        raise ValueError(f"Unknown operation {obj.operation} in {obj}")
 
 def s3_logfile_ingest(auth, f):
     for (ct,line) in enumerate(f):
@@ -261,12 +271,17 @@ def s3_logs_download(auth, threads=1):
     :param threads: number of threads to use
     """
     q = queue.Queue()
+    bc = queue.Queue()          # backchannel
 
     def worker():
         auth2 = copy.deepcopy(auth) # thread local auth
         while True:
             key = q.get()
-            s3_log_ingest(auth2, key)
+            try:
+                s3_log_ingest(auth2, key)
+            except ValueError as e:
+                print(e)
+                bc.put('DIE')
             q.task_done()
 
     # Start the threads
@@ -278,6 +293,15 @@ def s3_logs_download(auth, threads=1):
     for page in pages:
         for obj in page.get('Contents'):
             q.put(obj['Key'])
+            try:
+                back = bc.get(block=False)
+            except queue.Empty:
+                pass
+            else:
+                print("Data received on backchannel:",back)
+                if back=='DIE':
+                    raise RuntimeError("time to die")
+
     # Block until all tasks are done
     # Don't bother killing the workers.
     q.join()
