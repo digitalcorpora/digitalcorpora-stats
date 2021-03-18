@@ -182,56 +182,62 @@ def add_database(auth, obj):
     logging.info("r=%s key=%s remote_ip=%s time=%s",r,obj.key,obj.remote_ip,obj.time)
 
 
+seen_dates = set()
+def obj_injest(auth, obj):
+    print(obj)
+    if obj.time.date() not in seen_dates:
+        logging.info("%s",obj.time.date())
+        seen_dates.add(obj.time.date())
+    if obj.operation == weblog.weblog.REST_GET_OBJECT:
+        add_database(auth, obj)
+    elif obj.operation == 'REST.GET.BUCKET':
+        continue
+    elif obj.operation in [
+            'REST.PUT.PART',
+            'REST.PUT.OBJECT',
+            'REST.POST.UPLOAD',
+            'REST.POST.UPLOADS',
+    ]:
+        print("upload:",obj)
+        continue
+    elif obj.operation in [
+            'REST.GET.ACCELERATE',
+            'REST.GET.ACL',
+            'REST.GET.BUCKETPOLICY',
+            'REST.GET.BUCKETVERSIONS',
+            'REST.GET.CORS',
+            'REST.GET.ENCRYPTION',
+            'REST.GET.INTELLIGENT_TIERING',
+            'REST.GET.INVENTORY',
+            'REST.GET.LIFECYCLE',
+            'REST.GET.LOGGING_STATUS',
+            'REST.GET.NOTIFICATION',
+            'REST.GET.OBJECT_LOCK_CONFIGURATION',
+            'REST.GET.OWNERSHIP_CONTROLS',
+            'REST.GET.POLICY_STATUS',
+            'REST.GET.PUBLIC_ACCESS_BLOCK',
+            'REST.GET.REPLICATION',
+            'REST.GET.REQUEST_PAYMENT',
+            'REST.GET.TAGGING',
+            'REST.GET.VERSIONING',
+            'REST.GET.WEBSITE',
+            'REST.HEAD.BUCKET',
+            'REST.PUT.BUCKETPOLICY',
+            'REST.PUT.LOGGING_STATUS',
+            'REST.PUT.METRICS',
+            'REST.PUT.NOTIFICATION',
+            'REST.PUT.VERSIONING',
+    ]:
+        continue
+    else:
+        print(obj.operation)
+
 def s3_logfile_ingest(auth, f):
-    added = 0
-    seen_dates = set()
     for (ct,line) in enumerate(f):
         if (auth.debug or args.verbose) and ct%1000==0:
-            print(f"{ct} {added} added...")
+            print(f"{ct} added...")
         obj = weblog.weblog.S3Log(line)
-        if args.verbose and obj.time.date() not in seen_dates:
-            print(obj.time.date())
-            seen_dates.add(obj.time.date())
-        if obj.operation == weblog.weblog.REST_GET_OBJECT:
-            add_database(auth, obj)
-            added += 1
-        elif obj.operation == weblog.weblog.REST_PUT_PART or obj.operation== 'REST.PUT.OBJECT':
-            continue
-        elif obj.operation == 'REST.GET.BUCKET':
-            continue
-        elif obj.operation == 'REST.POST.UPLOAD' or obj.operation == 'REST.POST.UPLOADS':
-            continue
-        elif obj.operation in ['REST.GET.ACL',
-                               'REST.GET.PUBLIC_ACCESS_BLOCK',
-                               'REST.GET.INTELLIGENT_TIERING',
-                               'REST.PUT.BUCKETPOLICY',
-                               'REST.GET.CORS',
-                               'REST.GET.POLICY_STATUS',
-                               'REST.GET.TAGGING',
-                               'REST.GET.ACCELERATE',
-                               'REST.GET.INVENTORY',
-                               'REST.GET.VERSIONING',
-                               'REST.GET.WEBSITE',
-                               'REST.GET.OWNERSHIP_CONTROLS',
-                               'REST.GET.BUCKETPOLICY',
-                               'REST.GET.LOGGING_STATUS',
-                               'REST.PUT.NOTIFICATION',
-                               'REST.GET.BUCKETVERSIONS',
-                               'REST.HEAD.BUCKET',
-                               'REST.PUT.METRICS',
-                               'REST.PUT.LOGGING_STATUS',
-                               'REST.GET.NOTIFICATION',
-                               'REST.GET.REPLICATION',
-                               'REST.GET.REQUEST_PAYMENT',
-                               'REST.GET.ENCRYPTION',
-                               'REST.GET.OBJECT_LOCK_CONFIGURATION',
-                               'REST.PUT.VERSIONING',
-                               'REST.GET.LIFECYCLE']:
-
-
-            continue
-        else:
-            print(obj.operation)
+        obj_ingest(auth, obj)
 
 def s3_log_ingest(auth, key):
     """Given an s3 key, ingest each of its records, and them to the databse, and then delete it.
@@ -245,8 +251,7 @@ def s3_log_ingest(auth, key):
         line_stream = codecs.getreader("utf-8")
         for line in line_stream(o2['Body']):
             obj = weblog.weblog.S3Log(line)
-            if obj.operation == weblog.weblog.REST_GET_OBJECT:
-                add_database(auth, obj)
+            obj_ingest(auth, obj)
         s3client.delete_object(Bucket=S3_LOG_BUCKET, Key=key)
 
 
