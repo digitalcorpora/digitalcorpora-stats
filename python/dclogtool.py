@@ -332,7 +332,7 @@ if __name__ == "__main__":
 
     if args.apache_logfile:
         import_apache_logfile(auth, args.apache_logfile)
-    elif args.s3prefix:
+    elif args.hash_s3prefix:
         hash_s3prefix(auth, args.s3prefix, threads=args.threads)
     elif args.s3_download_ingest:
         s3_logs_download(auth, args.threads)
