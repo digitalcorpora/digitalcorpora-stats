@@ -15,6 +15,7 @@ import datetime
 import codecs
 import queue
 import threading
+import signal
 
 import boto3
 import pymysql
@@ -179,66 +180,67 @@ def add_download(auth, obj):
                         VALUES ((select id from downloadable where s3key=%s),%s,%s)
                         """,
                         (obj.key, obj.remote_ip, obj.time))
-    logging.info("r=%s key=%s remote_ip=%s time=%s",r,obj.key,obj.remote_ip,obj.time)
+    logging.info("object added r=%s key=%s remote_ip=%s time=%s",r,obj.key,obj.remote_ip,obj.time)
 
 
 seen_dates = set()
+WRITE_OBJECTS = set([ 'REST.PUT.PART',
+                      'REST.PUT.OBJECT',
+                      'REST.POST.OBJECT',
+                      'REST.POST.UPLOAD',
+                      'REST.POST.UPLOADS',
+                     ])
+
+DEL_OBJECTS = set(['REST.DELETE.OBJECT',
+                   'REST.DELETE.UPLOAD' ])
+GET_OBJECTS = set([ 'REST.GET.OBJECT',
+                    'WEBSITE.GET.OBJECT' ])
+MISC_OBJECTS = set([ 'REST.GET.ACCELERATE',
+                     'REST.GET.ACL',
+                     'REST.GET.BUCKET',
+                     'REST.GET.BUCKETPOLICY',
+                     'REST.GET.BUCKETVERSIONS',
+                     'REST.GET.CORS',
+                     'REST.GET.ENCRYPTION',
+                     'REST.GET.INTELLIGENT_TIERING',
+                     'REST.GET.INVENTORY',
+                     'REST.GET.LIFECYCLE',
+                     'REST.GET.LOCATION',
+                     'REST.GET.LOGGING_STATUS',
+                     'REST.GET.NOTIFICATION',
+                     'REST.GET.OBJECT_LOCK_CONFIGURATION',
+                     'REST.GET.OWNERSHIP_CONTROLS',
+                     'REST.GET.POLICY_STATUS',
+                     'REST.GET.PUBLIC_ACCESS_BLOCK',
+                     'REST.GET.REPLICATION',
+                     'REST.GET.REQUEST_PAYMENT',
+                     'REST.GET.TAGGING',
+                     'REST.GET.VERSIONING',
+                     'REST.GET.WEBSITE',
+                     'REST.GET.ANALYTICS',
+                     'S3.TRANSITION_INT.OBJECT',
+                     'REST.HEAD.OBJECT',
+                     'WEBSITE.HEAD.OBJECT',
+                     'REST.HEAD.BUCKET',
+                     'REST.PUT.BUCKETPOLICY',
+                     'REST.PUT.LOGGING_STATUS',
+                     'REST.PUT.METRICS',
+                     'REST.PUT.NOTIFICATION',
+                     'REST.PUT.VERSIONING',
+                     'REST.PUT.WEBSITE',
+                     'REST.OPTIONS.PREFLIGHT' ])
 def obj_ingest(auth, obj):
     if obj.time.date() not in seen_dates:
         logging.info("%s",obj.time.date())
         seen_dates.add(obj.time.date())
-    if obj.operation in [
-            'REST.GET.OBJECT',
-            'WEBSITE.GET.OBJECT'
-    ]:
+    if obj.operation in GET_OBJECTS:
         add_download(auth, obj)
-    elif obj.operation in [
-            'REST.PUT.PART',
-            'REST.PUT.OBJECT',
-            'REST.POST.UPLOAD',
-            'REST.POST.UPLOADS',
-    ]:
+    elif obj.operation in WRITE_OBJECTS:
         print("upload:",obj.key)
-    elif obj.operation in [
-            'REST.GET.ACCELERATE',
-            'REST.GET.ACL',
-            'REST.GET.BUCKET',
-            'REST.GET.BUCKETPOLICY',
-            'REST.GET.BUCKETVERSIONS',
-            'REST.GET.CORS',
-            'REST.GET.ENCRYPTION',
-            'REST.GET.INTELLIGENT_TIERING',
-            'REST.GET.INVENTORY',
-            'REST.GET.LIFECYCLE',
-            'REST.GET.LOCATION',
-            'REST.GET.LOGGING_STATUS',
-            'REST.GET.NOTIFICATION',
-            'REST.GET.OBJECT_LOCK_CONFIGURATION',
-            'REST.GET.OWNERSHIP_CONTROLS',
-            'REST.GET.POLICY_STATUS',
-            'REST.GET.PUBLIC_ACCESS_BLOCK',
-            'REST.GET.REPLICATION',
-            'REST.GET.REQUEST_PAYMENT',
-            'REST.GET.TAGGING',
-            'REST.GET.VERSIONING',
-            'REST.GET.WEBSITE',
-            'REST.GET.ANALYTICS',
-            'REST.HEAD.OBJECT',
-            'WEBSITE.HEAD.OBJECT',
-            'REST.HEAD.BUCKET',
-            'REST.PUT.BUCKETPOLICY',
-            'REST.PUT.LOGGING_STATUS',
-            'REST.PUT.METRICS',
-            'REST.PUT.NOTIFICATION',
-            'REST.PUT.VERSIONING',
-            'REST.PUT.WEBSITE',
-    ]:
+    elif obj.operation in DEL_OBJECTS:
+        print("del:",obj.key)
+    elif obj.operation in MISC_OBJECTS:
         pass
-    elif obj.operation in [
-            'S3.TRANSITION_INT.OBJECT',
-    ]:
-        print("S3 Transition: ",obj.key)
-
     else:
         raise ValueError(f"Unknown operation {obj.operation} in {obj}")
 
@@ -254,6 +256,7 @@ def s3_log_ingest(auth, key):
     :param auth: authentication token to write to the database
     :param key: key of the logfile
     """
+
     logging.info("%s",key)
     with open(S3_LOGFILE,"a") as out:
         s3client  = boto3.client('s3')
@@ -284,6 +287,13 @@ def s3_logs_download(auth, threads=1):
                 bc.put('DIE')
             q.task_done()
 
+
+    # Terminate on control-c, but after this object is processed.
+    terminate = False
+    def handler(signum, frame):
+        bc.write('DIE')
+    signal.signal(signal.SIGINT, handler)
+
     # Start the threads
     for i in range(args.threads):
         threading.Thread(target=worker, daemon=True).start()
@@ -301,6 +311,10 @@ def s3_logs_download(auth, threads=1):
                 print("Data received on backchannel:",back)
                 if back=='DIE':
                     raise RuntimeError("time to die")
+    if terminate:
+        print("Clean termination. Clearing work queue.")
+        q.clear()
+
 
     # Block until all tasks are done
     # Don't bother killing the workers.
@@ -313,7 +327,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Import the Digital Corpora logs.',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--wipe", help="Wipe database and load a new schema", action='store_true')
-    parser.add_argument("--prod", help="Use production database", action='store_true')
     parser.add_argument("--debug", action='store_true')
     parser.add_argument("--verbose", action='store_true')
     parser.add_argument("--threads", "-j", type=int, default=1)
@@ -327,6 +340,11 @@ if __name__ == "__main__":
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--aws", help="Get database password from aws secrets system", action='store_true')
     g.add_argument("--env", help="Get database password from environment variables", action='store_true')
+    g = parser.add_mutually_exclusive_group(required=True)
+    g.add_argument("--prod", help="Use production database", action='store_true')
+    g.add_argument("--test", help="Use test database", action='store_true')
+
+
     clogging.add_argument(parser)
     args = parser.parse_args()
     clogging.setup(args.loglevel)
@@ -334,9 +352,9 @@ if __name__ == "__main__":
     if args.verbose:
         logging.getLogger().setLevel(logging.INFO)
 
+    database = "dcstats_test" if not args.prod else 'dcstats'
     if args.aws:
         s = aws_secrets.get_secret()
-        database = "dcstats_test" if not args.prod else 'dcstats'
         auth = dbfile.DBMySQLAuth(host=s['host'],
                                   database=database,
                                   user=s['username'],
@@ -344,7 +362,6 @@ if __name__ == "__main__":
                                   debug=args.debug)
 
     elif args.env:
-        database = "dcstats_test" if not args.prod else 'dcstats'
         auth = dbfile.DBMySQLAuth(host=os.environ['DBWRITER_HOSTNAME'],
                                   database=database,
                                   user=os.environ['DBWRITER_USERNAME'],
