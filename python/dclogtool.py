@@ -308,7 +308,6 @@ def s3_logs_download(auth, threads=1):
     paginator = s3client.get_paginator('list_objects_v2')
     pages = paginator.paginate(Bucket=S3_LOG_BUCKET, Prefix='')
     for page in pages:
-        # print("page=",json.dumps(page,indent=4))
         if 'Contents' not in page:
             continue
         for obj in page.get('Contents'):
