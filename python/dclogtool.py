@@ -173,7 +173,7 @@ def add_download(auth, obj):
             # It already exists.
             pass
         else:
-            raise RuntimeError(e)
+            raise RuntimeError(e) from e
     # Now add the download
     r = dbfile.DBMySQL.csfr(auth,
                         """
@@ -295,10 +295,9 @@ def s3_logs_download(auth, threads=1):
             q.task_done()
 
 
-    # Terminate on control-c, but after this object is processed.
-    terminate = False
-    def handler(signum, frame):
-        bc.put('DIE')
+    def handler(signum, _frame):
+        if signum==signal.SIGINT:
+            bc.put('DIE')
     signal.signal(signal.SIGINT, handler)
 
     # Start the threads
@@ -320,10 +319,6 @@ def s3_logs_download(auth, threads=1):
                 logging.info("Data received on backchannel: %s",back)
                 if back=='DIE':
                     raise RuntimeError("time to die")
-    if terminate:
-        logging.info("Clean termination. Clearing work queue.")
-        q.clear()
-
 
     # Block until all tasks are done
     # Don't bother killing the workers.
