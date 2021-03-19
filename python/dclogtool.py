@@ -240,6 +240,9 @@ def obj_ingest(auth, obj):
     if obj.operation in GET_OBJECTS:
         if obj.http_status in [200,206]:
             add_download(auth, obj)
+        elif obj.http_status in [404]:
+            # bad URL
+            pass
         else:
             logging.warning("will not ingest: %s",obj)
     elif obj.operation in WRITE_OBJECTS:
