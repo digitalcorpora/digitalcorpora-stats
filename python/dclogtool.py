@@ -16,6 +16,7 @@ import codecs
 import queue
 import threading
 import signal
+import json
 
 import boto3
 import pymysql
@@ -34,7 +35,7 @@ import ctools.clogging as clogging
 year = datetime.datetime.now().year
 
 S3_LOG_BUCKET = 'digitalcorpora-logs'
-S3_LOGFILE = os.path.join( os.getenv("HOME"), "s3logs", f"s3logs.{year}.log")
+S3_LOGFILE_PATH = os.path.join( os.getenv("HOME"), "s3logs", f"s3logs.{year}.log")
 
 def import_apache_logfile(auth, logfile):
     # see if the schema is present. If not, send it with the wipe command
@@ -59,14 +60,14 @@ def import_s3obj(obj):
     s3key  = obj['Key']
     # Make sure that this object is in the database.
 
-    cmd  = "INSERT INTO DOWNLOADABLE (s3key,bytes,mtime,etag) values (%s,%s,%s,%s)"
+    cmd  = "INSERT INTO downloadable (s3key,bytes,mtime,etag) VALUES (%s,%s,%s,%s)"
     vals = (s3key, obj['Size'], obj['LastModified'], obj['ETag'])
     try:
         dbfile.DBMySQL.csfr(auth, cmd, vals)
     except pymysql.err.IntegrityError as e:
         if e.args[0]==1062:
             # It already exists. If the ETag hasn't changed and we have both sha2_256 and sha3_256, just return
-            rows = dbfile.DBMySQL.csfr(auth, "SELECT ETag from downloadable where s3key=%s and (sha2_256 is not null) and (sha3_256 is not null)", (s3key,))
+            rows = dbfile.DBMySQL.csfr(auth, "SELECT ETag FROM downloadable WHERE s3key=%s AND (sha2_256 IS NOT NULL) AND (sha3_256 IS NOT NULL)", (s3key,))
             if len(rows)==1 and rows[0][0]==obj['ETag']:
                 logging.info('ETag matches; will not update %s', s3key)
                 return None
@@ -198,6 +199,8 @@ GET_OBJECTS = set([ 'REST.GET.OBJECT',
 MISC_OBJECTS = set([ 'REST.GET.ACCELERATE',
                      'REST.GET.ACL',
                      'REST.GET.BUCKET',
+                     'REST.COPY.OBJECT',
+                     'REST.COPY.OBJECT_GET',
                      'REST.GET.BUCKETPOLICY',
                      'REST.GET.BUCKETVERSIONS',
                      'REST.GET.CORS',
@@ -234,11 +237,14 @@ def obj_ingest(auth, obj):
         logging.info("%s",obj.time.date())
         seen_dates.add(obj.time.date())
     if obj.operation in GET_OBJECTS:
-        add_download(auth, obj)
+        if obj.http_status in [200,206]:
+            add_download(auth, obj)
+        else:
+            logging.warning("will not ingest: %s",obj)
     elif obj.operation in WRITE_OBJECTS:
-        print("upload:",obj.key)
+        logging.warning("upload: %s",obj.key)
     elif obj.operation in DEL_OBJECTS:
-        print("del:",obj.key)
+        logging.warning("del: %s",obj.key)
     elif obj.operation in MISC_OBJECTS:
         pass
     else:
@@ -246,26 +252,27 @@ def obj_ingest(auth, obj):
 
 def s3_logfile_ingest(auth, f):
     for (ct,line) in enumerate(f):
-        if (auth.debug or args.verbose) and ct%1000==0:
-            print(f"{ct} added...")
+        if ct%1000==0:
+            logging.info("%s added...",ct)
         obj = weblog.weblog.S3Log(line)
         obj_ingest(auth, obj)
 
+s3_logfile = open(S3_LOGFILE_PATH,"a")
 def s3_log_ingest(auth, key):
     """Given an s3 key, ingest each of its records, and them to the databse, and then delete it.
     :param auth: authentication token to write to the database
     :param key: key of the logfile
     """
-
     logging.info("%s",key)
-    with open(S3_LOGFILE,"a") as out:
-        s3client  = boto3.client('s3')
-        o2   = s3client.get_object(Bucket=S3_LOG_BUCKET, Key=key)
-        line_stream = codecs.getreader("utf-8")
-        for line in line_stream(o2['Body']):
-            obj = weblog.weblog.S3Log(line)
-            obj_ingest(auth, obj)
-        s3client.delete_object(Bucket=S3_LOG_BUCKET, Key=key)
+    s3client  = boto3.client('s3')
+    o2   = s3client.get_object(Bucket=S3_LOG_BUCKET, Key=key)
+    line_stream = codecs.getreader("utf-8")
+    for line in line_stream(o2['Body']):
+        obj = weblog.weblog.S3Log(line)
+        obj_ingest(auth, obj)
+        s3_logfile.write(line)
+    s3client.delete_object(Bucket=S3_LOG_BUCKET, Key=key)
+    s3_logfile.flush()
 
 
 def s3_logs_download(auth, threads=1):
@@ -273,7 +280,7 @@ def s3_logs_download(auth, threads=1):
     :param auth: authentication token to write to the database.
     :param threads: number of threads to use
     """
-    q = queue.Queue()
+    q  = queue.Queue()           # forward channel
     bc = queue.Queue()          # backchannel
 
     def worker():
@@ -283,7 +290,7 @@ def s3_logs_download(auth, threads=1):
             try:
                 s3_log_ingest(auth2, key)
             except ValueError as e:
-                print(e)
+                logging.error("%s",e)
                 bc.put('DIE')
             q.task_done()
 
@@ -291,7 +298,7 @@ def s3_logs_download(auth, threads=1):
     # Terminate on control-c, but after this object is processed.
     terminate = False
     def handler(signum, frame):
-        bc.write('DIE')
+        bc.put('DIE')
     signal.signal(signal.SIGINT, handler)
 
     # Start the threads
@@ -301,6 +308,9 @@ def s3_logs_download(auth, threads=1):
     paginator = s3client.get_paginator('list_objects_v2')
     pages = paginator.paginate(Bucket=S3_LOG_BUCKET, Prefix='')
     for page in pages:
+        # print("page=",json.dumps(page,indent=4))
+        if 'Contents' not in page:
+            continue
         for obj in page.get('Contents'):
             q.put(obj['Key'])
             try:
@@ -308,11 +318,11 @@ def s3_logs_download(auth, threads=1):
             except queue.Empty:
                 pass
             else:
-                print("Data received on backchannel:",back)
+                logging.info("Data received on backchannel: %s",back)
                 if back=='DIE':
                     raise RuntimeError("time to die")
     if terminate:
-        print("Clean termination. Clearing work queue.")
+        logging.info("Clean termination. Clearing work queue.")
         q.clear()
 
 
@@ -320,6 +330,35 @@ def s3_logs_download(auth, threads=1):
     # Don't bother killing the workers.
     q.join()
 
+class Object:
+    pass
+
+def db_copy( auth ):
+    """Copy the downloads from the dev database to the production database.
+    This was created because I accidentally committed to the production database.
+    There are 17,000 transactions and this ran in less than a minute.
+    """
+    db = dbfile.DBMySQL(auth)
+    c = db.cursor()
+    c.execute("SELECT b.s3key,b.bytes, a.ipaddr,a.dtime FROM dcstats_test.downloads a RIGHT JOIN downloadable b ON a.did=b.id where (a.ipaddr is not null) and (a.dtime is not null) ")
+    count = 0
+    for (s3key,bytes,ipaddr,dtime) in c.fetchall():
+        count += 1
+        if count%100==0:
+            print(count)
+        d = db.cursor()
+        d.execute("SELECT id from dcstats.downloads where did = (select id from downloadable where s3key=%s) and ipaddr=%s and dtime=%s",
+                  (s3key,ipaddr,dtime))
+        m = d.fetchall()
+        if len(m)==0:
+            obj = Object()
+            obj.key = s3key
+            obj.object_size = bytes
+            obj.remote_ip = ipaddr
+            obj.time = dtime
+            add_download( auth, obj)
+            print("Added",s3key,ipaddr,dtime)
+    print("total:",count)
 
 
 if __name__ == "__main__":
@@ -337,6 +376,8 @@ if __name__ == "__main__":
                         help='download S3 logs to local directory, combine into local logfile, and ingest')
     g.add_argument("--s3_logfile_ingest",
                         help='ingest an already downloaded s3 logfile')
+    g.add_argument("--copy", action='store_true',
+                   help='Copy downloads from test to prod that are not present in prod')
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--aws", help="Get database password from aws secrets system", action='store_true')
     g.add_argument("--env", help="Get database password from environment variables", action='store_true')
@@ -344,13 +385,16 @@ if __name__ == "__main__":
     g.add_argument("--prod", help="Use production database", action='store_true')
     g.add_argument("--test", help="Use test database", action='store_true')
 
-
     clogging.add_argument(parser)
     args = parser.parse_args()
     clogging.setup(args.loglevel)
 
     if args.verbose:
         logging.getLogger().setLevel(logging.INFO)
+
+    if args.copy and args.test:
+        logging.error("--copy requires --prod")
+        exit(1)
 
     database = "dcstats_test" if not args.prod else 'dcstats'
     if args.aws:
@@ -373,16 +417,22 @@ if __name__ == "__main__":
         print("auth:", auth)
 
     if args.wipe:
+        really = input("really wipe? [y/n]")
+        if really[0]!='y':
+            print("Will not wipe")
+            exit(1)
         db = dbfile.DBMySQL(auth)
         db.create_schema(open("schema.sql", "r").read())
 
     if args.apache_logfile:
         import_apache_logfile(auth, args.apache_logfile)
     elif args.hash_s3prefix:
-        hash_s3prefix(auth, args.s3prefix, threads=args.threads)
+        hash_s3prefix(auth, args.hash_s3prefix, threads=args.threads)
     elif args.s3_download_ingest:
         s3_logs_download(auth, args.threads)
     elif args.s3_logfile_ingest:
         s3_logfile_ingest( auth, open(args.s3_logfile_ingest))
+    elif args.copy:
+        db_copy( auth )
     else:
         raise RuntimeError("Unknown action")

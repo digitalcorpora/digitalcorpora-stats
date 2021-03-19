@@ -130,8 +130,12 @@ class S3Log:
         self.bucket       = parts[1][2]
         self.time         = dateutil.parser.parse(parts[2][1].replace(":"," ",1))
         self.remote_ip    = parts[3][2]
+        self.http_status  = int(parts[9][2])
         self.operation    = parts[6][2]
         self.key          = urllib.parse.unquote(urllib.parse.unquote(parts[7][2]))
         self.bytes_sent   = safe_int(parts[11][2])
         self.object_size  = safe_int(parts[12][2])
         self.user_agent   = parts[16][0]
+
+    def __repr__(self):
+        return f"<{type(self)} {self.time} {self.remote_ip} {self.key} {self.http_status}>"
