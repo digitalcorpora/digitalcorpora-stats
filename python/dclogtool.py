@@ -4,19 +4,19 @@ digitalcorpora log tool.
 
 """
 
-import os
-import urllib.parse
-import hashlib
-import multiprocessing
-import logging
-import copy
-import time
-import datetime
 import codecs
+import copy
+import datetime
+import hashlib
+import logging
+import multiprocessing
+import os
 import queue
-import threading
 import signal
-import json
+import sys
+import threading
+import time
+import urllib.parse
 
 import boto3
 import pymysql
@@ -301,7 +301,7 @@ def s3_logs_download(auth, threads=1):
     signal.signal(signal.SIGINT, handler)
 
     # Start the threads
-    for i in range(args.threads):
+    for _ in range(threads):
         threading.Thread(target=worker, daemon=True).start()
     s3client  = boto3.client('s3')
     paginator = s3client.get_paginator('list_objects_v2')
@@ -324,9 +324,6 @@ def s3_logs_download(auth, threads=1):
     # Don't bother killing the workers.
     q.join()
 
-class Object:
-    pass
-
 def db_copy( auth ):
     """Copy the downloads from the dev database to the production database.
     This was created because I accidentally committed to the production database.
@@ -336,22 +333,21 @@ def db_copy( auth ):
     c = db.cursor()
     c.execute("SELECT b.s3key,b.bytes, a.ipaddr,a.dtime FROM dcstats_test.downloads a RIGHT JOIN downloadable b ON a.did=b.id where (a.ipaddr is not null) and (a.dtime is not null) ")
     count = 0
-    for (s3key,bytes,ipaddr,dtime) in c.fetchall():
+    for (s3key,object_size,remote_ip,dtime) in c.fetchall():
         count += 1
         if count%100==0:
             print(count)
         d = db.cursor()
-        d.execute("SELECT id from dcstats.downloads where did = (select id from downloadable where s3key=%s) and ipaddr=%s and dtime=%s",
-                  (s3key,ipaddr,dtime))
+        d.execute("SELECT id from dcstats.downloads where did = (select id from downloadable where s3key=%s) and remote_ip=%s and dtime=%s",
+                  (s3key,remote_ip,dtime))
         m = d.fetchall()
         if len(m)==0:
-            obj = Object()
-            obj.key = s3key
-            obj.object_size = bytes
-            obj.remote_ip = ipaddr
-            obj.time = dtime
+            obj = weblog.weblog.S3Log(None, {'key':s3key,
+                                             'object_size': object_size,
+                                             'remote_ip':remote_ip,
+                                             'time':dtime})
             add_download( auth, obj)
-            print("Added",s3key,ipaddr,dtime)
+            print("Added",s3key,remote_ip,dtime)
     print("total:",count)
 
 
@@ -388,7 +384,7 @@ if __name__ == "__main__":
 
     if args.copy and args.test:
         logging.error("--copy requires --prod")
-        exit(1)
+        sys.exit(1)
 
     database = "dcstats_test" if not args.prod else 'dcstats'
     if args.aws:
@@ -414,7 +410,7 @@ if __name__ == "__main__":
         really = input("really wipe? [y/n]")
         if really[0]!='y':
             print("Will not wipe")
-            exit(1)
+            sys.exit(1)
         db = dbfile.DBMySQL(auth)
         db.create_schema(open("schema.sql", "r").read())
 
