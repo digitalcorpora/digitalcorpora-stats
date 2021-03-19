@@ -31,6 +31,7 @@ import weblog.weblog
 import aws_secrets
 import ctools.dbfile as dbfile
 import ctools.clogging as clogging
+import ctools.lock
 
 year = datetime.datetime.now().year
 
@@ -414,6 +415,7 @@ if __name__ == "__main__":
         db = dbfile.DBMySQL(auth)
         db.create_schema(open("schema.sql", "r").read())
 
+    ctools.lock.lock_script()
     if args.apache_logfile:
         import_apache_logfile(auth, args.apache_logfile)
     elif args.hash_s3prefix:
