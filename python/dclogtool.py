@@ -197,8 +197,10 @@ DEL_OBJECTS = set(['REST.DELETE.OBJECT',
                    'REST.DELETE.UPLOAD',
                    'S3.EXPIRE.OBJECT',
                    ])
+
 GET_OBJECTS = set([ 'REST.GET.OBJECT',
                     'WEBSITE.GET.OBJECT' ])
+
 MISC_OBJECTS = set([ 'REST.GET.ACCELERATE',
                      'REST.GET.ACL',
                      'REST.GET.BUCKET',
