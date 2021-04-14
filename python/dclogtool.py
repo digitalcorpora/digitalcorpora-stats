@@ -194,9 +194,13 @@ WRITE_OBJECTS = set([ 'REST.PUT.PART',
                      ])
 
 DEL_OBJECTS = set(['REST.DELETE.OBJECT',
-                   'REST.DELETE.UPLOAD' ])
+                   'REST.DELETE.UPLOAD',
+                   'S3.EXPIRE.OBJECT',
+                   ])
+
 GET_OBJECTS = set([ 'REST.GET.OBJECT',
                     'WEBSITE.GET.OBJECT' ])
+
 MISC_OBJECTS = set([ 'REST.GET.ACCELERATE',
                      'REST.GET.ACL',
                      'REST.GET.BUCKET',
@@ -213,6 +217,7 @@ MISC_OBJECTS = set([ 'REST.GET.ACCELERATE',
                      'REST.GET.LOGGING_STATUS',
                      'REST.GET.NOTIFICATION',
                      'REST.GET.OBJECT_LOCK_CONFIGURATION',
+                     'REST.GET.OBJECT_TAGGING',
                      'REST.GET.OWNERSHIP_CONTROLS',
                      'REST.GET.POLICY_STATUS',
                      'REST.GET.PUBLIC_ACCESS_BLOCK',
@@ -240,20 +245,24 @@ def obj_ingest(auth, obj):
     if obj.operation in GET_OBJECTS:
         if obj.http_status in [200,206]:
             add_download(auth, obj)
-        elif obj.http_status in [404]:
+        elif obj.http_status in [400,404]:
             # bad URL
-            pass
+            return
         elif obj.http_status in [304]:
             # not modified
-            pass
+            return
         else:
-            logging.warning("will not ingest: %s",obj)
+            # Log that we didn't ingest something, but throw it away
+            logging.warning("will not ingest: %s",obj.line)
     elif obj.operation in WRITE_OBJECTS:
+        if obj.http_status in [405]:
+            # Write objects blocked.
+            return
         logging.warning("upload: %s",obj.key)
     elif obj.operation in DEL_OBJECTS:
         logging.warning("del: %s",obj.key)
     elif obj.operation in MISC_OBJECTS:
-        pass
+        return
     else:
         raise ValueError(f"Unknown operation {obj.operation} in {obj}")
 

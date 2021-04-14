@@ -133,12 +133,18 @@ class S3Log:
             self.bucket       = parts[1][2]
             self.time         = dateutil.parser.parse(parts[2][1].replace(":"," ",1))
             self.remote_ip    = parts[3][2]
+<<<<<<< HEAD
             self.requester    = parts[4][2]
             self.request_id   = parts[5][2]
             self.operation    = parts[6][2]
             self.key          = urllib.parse.unquote(urllib.parse.unquote(parts[7][2]))
             self.request_uri  = parts[8][2]
             self.http_status  = safe_int(parts[9][2])
+=======
+            self.http_status  = safe_int(parts[9][2])
+            self.operation    = parts[6][2]
+            self.key          = urllib.parse.unquote(urllib.parse.unquote(parts[7][2]))
+>>>>>>> origin/master
             self.bytes_sent   = safe_int(parts[11][2])
             self.object_size  = safe_int(parts[12][2])
             self.user_agent   = parts[16][0]
