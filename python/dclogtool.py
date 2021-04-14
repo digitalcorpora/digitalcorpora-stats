@@ -178,7 +178,7 @@ def add_download(auth, obj):
     # Now add the download
     r = dbfile.DBMySQL.csfr(auth,
                         """
-                        INSERT INTO downloads (did, ipaddr, dtime)
+                        INSERT INTO downloads (did, remote_ipaddr, dtime)
                         VALUES ((select id from downloadable where s3key=%s),%s,%s)
                         """,
                         (obj.key, obj.remote_ip, obj.time))
@@ -194,7 +194,9 @@ WRITE_OBJECTS = set([ 'REST.PUT.PART',
                      ])
 
 DEL_OBJECTS = set(['REST.DELETE.OBJECT',
-                   'REST.DELETE.UPLOAD' ])
+                   'REST.DELETE.UPLOAD',
+                   'S3.EXPIRE.OBJECT',
+                   ])
 GET_OBJECTS = set([ 'REST.GET.OBJECT',
                     'WEBSITE.GET.OBJECT' ])
 MISC_OBJECTS = set([ 'REST.GET.ACCELERATE',
@@ -213,6 +215,7 @@ MISC_OBJECTS = set([ 'REST.GET.ACCELERATE',
                      'REST.GET.LOGGING_STATUS',
                      'REST.GET.NOTIFICATION',
                      'REST.GET.OBJECT_LOCK_CONFIGURATION',
+                     'REST.GET.OBJECT_TAGGING',
                      'REST.GET.OWNERSHIP_CONTROLS',
                      'REST.GET.POLICY_STATUS',
                      'REST.GET.PUBLIC_ACCESS_BLOCK',
@@ -240,17 +243,24 @@ def obj_ingest(auth, obj):
     if obj.operation in GET_OBJECTS:
         if obj.http_status in [200,206]:
             add_download(auth, obj)
-        elif obj.http_status in [404]:
+        elif obj.http_status in [400,404]:
             # bad URL
-            pass
+            return
+        elif obj.http_status in [304]:
+            # not modified
+            return
         else:
-            logging.warning("will not ingest: %s",obj)
+            # Log that we didn't ingest something, but throw it away
+            logging.warning("will not ingest: %s",obj.line)
     elif obj.operation in WRITE_OBJECTS:
+        if obj.http_status in [405]:
+            # Write objects blocked.
+            return
         logging.warning("upload: %s",obj.key)
     elif obj.operation in DEL_OBJECTS:
         logging.warning("del: %s",obj.key)
     elif obj.operation in MISC_OBJECTS:
-        pass
+        return
     else:
         raise ValueError(f"Unknown operation {obj.operation} in {obj}")
 
@@ -335,7 +345,7 @@ def db_copy( auth ):
     """
     db = dbfile.DBMySQL(auth)
     c = db.cursor()
-    c.execute("SELECT b.s3key,b.bytes, a.ipaddr,a.dtime FROM dcstats_test.downloads a RIGHT JOIN downloadable b ON a.did=b.id where (a.ipaddr is not null) and (a.dtime is not null) ")
+    c.execute("SELECT b.s3key,b.bytes, a.remote_ipaddr,a.dtime FROM dcstats_test.downloads a RIGHT JOIN downloadable b ON a.did=b.id where (a.remote_ipaddr is not null) and (a.dtime is not null) ")
     count = 0
     for (s3key,object_size,remote_ip,dtime) in c.fetchall():
         count += 1

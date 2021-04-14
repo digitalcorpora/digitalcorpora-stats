@@ -90,7 +90,8 @@ class S3Log:
                  'operation', 'key', 'request_uri', 'http_status', 'error_code', 'bytes_sent', 'object_size',
                  'total_time', 'turn_around_time', 'referer', 'user_agent', 'version_id',
                  'host_id', 'signature_version',
-                 'cipher_suite', 'authentication_type', 'host_header', 'tls_version']
+                 'cipher_suite', 'authentication_type', 'host_header', 'tls_version',
+                 'line']
     # https://stackoverflow.com/questions/7961316/regex-to-split-columns-of-an-amazon-s3-bucket-log
     S3_REGEX  = r'(?:"([^"]+)")|(?:\[([^\]]+)\])|([^ ]+)'
     S3_RE     = re.compile(S3_REGEX)
@@ -127,11 +128,12 @@ class S3Log:
         """Double-unquoting seems required, although it's weird."""
         if line is not None:
             parts = self.S3_RE.findall(line)
+            self.line         = line
             self.bucket_owner = parts[0][2]
             self.bucket       = parts[1][2]
             self.time         = dateutil.parser.parse(parts[2][1].replace(":"," ",1))
             self.remote_ip    = parts[3][2]
-            self.http_status  = int(parts[9][2])
+            self.http_status  = safe_int(parts[9][2])
             self.operation    = parts[6][2]
             self.key          = urllib.parse.unquote(urllib.parse.unquote(parts[7][2]))
             self.bytes_sent   = safe_int(parts[11][2])
