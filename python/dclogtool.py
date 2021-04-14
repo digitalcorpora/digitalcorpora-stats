@@ -178,7 +178,7 @@ def add_download(auth, obj):
     # Now add the download
     r = dbfile.DBMySQL.csfr(auth,
                         """
-                        INSERT INTO downloads (did, ipaddr, dtime)
+                        INSERT INTO downloads (did, remote_ipaddr, dtime)
                         VALUES ((select id from downloadable where s3key=%s),%s,%s)
                         """,
                         (obj.key, obj.remote_ip, obj.time))
@@ -242,6 +242,9 @@ def obj_ingest(auth, obj):
             add_download(auth, obj)
         elif obj.http_status in [404]:
             # bad URL
+            pass
+        elif obj.http_status in [304]:
+            # not modified
             pass
         else:
             logging.warning("will not ingest: %s",obj)
@@ -335,7 +338,7 @@ def db_copy( auth ):
     """
     db = dbfile.DBMySQL(auth)
     c = db.cursor()
-    c.execute("SELECT b.s3key,b.bytes, a.ipaddr,a.dtime FROM dcstats_test.downloads a RIGHT JOIN downloadable b ON a.did=b.id where (a.ipaddr is not null) and (a.dtime is not null) ")
+    c.execute("SELECT b.s3key,b.bytes, a.remote_ipaddr,a.dtime FROM dcstats_test.downloads a RIGHT JOIN downloadable b ON a.did=b.id where (a.remote_ipaddr is not null) and (a.dtime is not null) ")
     count = 0
     for (s3key,object_size,remote_ip,dtime) in c.fetchall():
         count += 1
