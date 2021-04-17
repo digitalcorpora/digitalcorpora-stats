@@ -128,6 +128,8 @@ class S3Log:
         """Double-unquoting seems required, although it's weird."""
         if line is not None:
             parts = self.S3_RE.findall(line)
+            if len(parts)<17:
+                raise ValueError(f"could not parse line: {line}\nOnly found {len(parts)} parts")
             self.line         = line
             self.bucket_owner = parts[0][2]
             self.bucket       = parts[1][2]

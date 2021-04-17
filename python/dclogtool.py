@@ -51,6 +51,9 @@ def import_apache_logfile(auth, logfile):
 BUFSIZE=65536
 def import_s3obj(obj):
     """
+    This imports an S3 Object into the database, hashing it if necessary.
+    It does not import S3 download logs. Those are in a different format and are imported by add_download().
+
     Typical obj:
     {'Key': 'corpora/files/2009-audio/media1/media1_27_192kbps_44100Hz_Stereo_art.mp3', 'LastModified': datetime.datetime(2020, 11, 21, 23, 7, 31, tzinfo=tzlocal()), 'ETag': '"3045e3c6a79e791bbacd97a06c27f969"', 'Size': 384429, 'StorageClass': 'INTELLIGENT_TIERING', 'Bucket': 'digitalcorpora'}
     :param auth: authentication object.
@@ -59,8 +62,8 @@ def import_s3obj(obj):
 
     auth   = obj['auth']
     s3key  = obj['Key']
-    # Make sure that this object is in the database.
 
+    # Make sure that this object is in the database.
     cmd  = "INSERT INTO downloadable (s3key,bytes,mtime,etag) VALUES (%s,%s,%s,%s)"
     vals = (s3key, obj['Size'], obj['LastModified'], obj['ETag'])
     try:
@@ -165,23 +168,24 @@ def add_download(auth, obj):
     Note that the downloads are tracked by key, even though the object identified by the key may change.
     """
     logging.info("obj: %s",obj)
-    try:
-        dbfile.DBMySQL.csfr(auth,
-                            """INSERT INTO downloadable (s3key, bytes) VALUES (%s,%s) """,
-                            (obj.key, obj.object_size), nolog=[1062])
-    except pymysql.err.IntegrityError as e:
-        if e.args[0]==1062:
-            # It already exists.
-            pass
-        else:
-            raise RuntimeError(e) from e
+    dbfile.DBMySQL.csfr(auth,
+                        """INSERT INTO downloadable (s3key, bytes) VALUES (%s,%s) """,
+                        (obj.key, obj.object_size), ignore=[1062])
+    # Make sure the browser is in the databse
+    dbfile.DBMySQL.csfr(auth,
+                        """INSERT INTO user_agents (user_agent) VALUES (%s) """,
+                        (obj.user_agent,), ignore=[1062])
+
+
     # Now add the download
     r = dbfile.DBMySQL.csfr(auth,
                         """
-                        INSERT INTO downloads (did, remote_ipaddr, dtime)
-                        VALUES ((select id from downloadable where s3key=%s),%s,%s)
+                        INSERT INTO downloads (did, user_agent_id, remote_ipaddr, dtime, bytes_sent)
+                        VALUES ((select id from downloadable where s3key=%s),
+                                (select id from user_agents where user_agent=%s),
+                               %s,%s,%s)
                         """,
-                        (obj.key, obj.remote_ip, obj.time))
+                        (obj.key, obj.user_agent, obj.remote_ip, obj.time, obj.bytes_sent))
     logging.info("object added r=%s key=%s remote_ip=%s time=%s",r,obj.key,obj.remote_ip,obj.time)
 
 
@@ -291,7 +295,7 @@ def s3_log_ingest(auth, key):
     s3_logfile.flush()
 
 
-def s3_logs_download(auth, threads=1):
+def s3_logs_download(auth, threads=1, limit=sys.maxsize):
     """Download an S3 logs and ingest them.
     :param auth: authentication token to write to the database.
     :param threads: number of threads to use
@@ -300,11 +304,13 @@ def s3_logs_download(auth, threads=1):
     bc = queue.Queue()          # backchannel
 
     def worker():
+        nonlocal limit
         auth2 = copy.deepcopy(auth) # thread local auth
         while True:
             key = q.get()
             try:
                 s3_log_ingest(auth2, key)
+                limit -= 1
             except ValueError as e:
                 logging.error("%s",e)
                 bc.put('DIE')
@@ -323,9 +329,13 @@ def s3_logs_download(auth, threads=1):
     paginator = s3client.get_paginator('list_objects_v2')
     pages = paginator.paginate(Bucket=S3_LOG_BUCKET, Prefix='')
     for page in pages:
+        if limit<1:
+            break
         if 'Contents' not in page:
             continue
         for obj in page.get('Contents'):
+            if limit<1:
+                break
             q.put(obj['Key'])
             try:
                 back = bc.get(block=False)
@@ -390,6 +400,7 @@ if __name__ == "__main__":
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--prod", help="Use production database", action='store_true')
     g.add_argument("--test", help="Use test database", action='store_true')
+    parser.add_argument("--limit", type=int, default=sys.maxsize, help="Limit number of imports to this number")
 
     clogging.add_argument(parser)
     args = parser.parse_args()
@@ -423,6 +434,7 @@ if __name__ == "__main__":
         print("auth:", auth)
 
     if args.wipe:
+        raise RuntimeError("--wipe is disabled")
         really = input("really wipe? [y/n]")
         if really[0]!='y':
             print("Will not wipe")
@@ -436,7 +448,7 @@ if __name__ == "__main__":
     elif args.hash_s3prefix:
         hash_s3prefix(auth, args.hash_s3prefix, threads=args.threads)
     elif args.s3_download_ingest:
-        s3_logs_download(auth, args.threads)
+        s3_logs_download(auth, args.threads, args.limit)
     elif args.s3_logfile_ingest:
         s3_logfile_ingest( auth, open(args.s3_logfile_ingest))
     elif args.copy:
