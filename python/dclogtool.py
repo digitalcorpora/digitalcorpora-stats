@@ -254,6 +254,7 @@ DELETED  = 'DELETED'
 MISC     = 'MISC'
 BLOCKED  = 'BLOCKED'
 
+# pylint: disable=R0911
 def obj_ingest(auth, obj):
     if obj.time.date() not in seen_dates:
         logging.info("%s",obj.time.date())
@@ -271,6 +272,7 @@ def obj_ingest(auth, obj):
         else:
             # Log that we didn't ingest something, but throw it away
             logging.warning("will not ingest: %s",obj.line)
+            return BAD
     elif obj.operation in WRITE_OBJECTS:
         if obj.http_status in [405]:
             # Write objects blocked.
@@ -328,7 +330,7 @@ def s3_logs_download(auth, threads=1, limit=sys.maxsize):
     bc = queue.Queue()          # backchannel
 
     def worker():
-        nonlocal limit
+        nonlocal count
         auth2 = copy.deepcopy(auth) # thread local auth
         while True:
             key = q.get()
@@ -461,6 +463,7 @@ if __name__ == "__main__":
         print("auth:", auth)
 
     if args.wipe:
+        # pylint: disable=W0101
         raise RuntimeError("--wipe is disabled")
         really = input("really wipe? [y/n]")
         if really[0]!='y':
