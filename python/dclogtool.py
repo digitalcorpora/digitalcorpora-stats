@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import urllib.parse
+from collections import defaultdict
 
 import boto3
 import pymysql
@@ -245,6 +246,14 @@ MISC_OBJECTS = set([ 'REST.GET.ACCELERATE',
                      'REST.PUT.VERSIONING',
                      'REST.PUT.WEBSITE',
                      'REST.OPTIONS.PREFLIGHT' ])
+
+DOWNLOAD = 'DOWNLOAD'
+UPLOAD   = 'UPLOAD'
+BAD      = 'BAD'
+DELETED  = 'DELETED'
+MISC     = 'MISC'
+BLOCKED  = 'BLOCKED'
+
 def obj_ingest(auth, obj):
     if obj.time.date() not in seen_dates:
         logging.info("%s",obj.time.date())
@@ -252,33 +261,44 @@ def obj_ingest(auth, obj):
     if obj.operation in GET_OBJECTS:
         if obj.http_status in [200,206]:
             add_download(auth, obj)
+            return DOWNLOAD
         elif obj.http_status in [400,404]:
             # bad URL
-            return
+            return BAD
         elif obj.http_status in [304]:
             # not modified
-            return
+            return BAD
         else:
             # Log that we didn't ingest something, but throw it away
             logging.warning("will not ingest: %s",obj.line)
     elif obj.operation in WRITE_OBJECTS:
         if obj.http_status in [405]:
             # Write objects blocked.
-            return
-        logging.warning("upload: %s",obj.key)
+            return BLOCKED
+        logging.warning("upload: %s %s %s",obj.time,obj.operation,obj.key)
+        return UPLOAD
     elif obj.operation in DEL_OBJECTS:
-        logging.warning("del: %s",obj.key)
+        logging.warning("del: %s %s %s",obj.time,obj.operation,obj.key)
+        return DELETED
     elif obj.operation in MISC_OBJECTS:
-        return
+        return MISC
     else:
         raise ValueError(f"Unknown operation {obj.operation} in {obj}")
 
 def s3_logfile_ingest(auth, f):
+    sums = defaultdict(int)
     for (ct,line) in enumerate(f):
+        line = line.strip()
+        if line=='':
+            continue
         if ct%1000==0:
-            logging.info("%s added...",ct)
+            logging.info("%s processed...",ct)
         obj = weblog.weblog.S3Log(line)
-        obj_ingest(auth, obj)
+        what = obj_ingest(auth, obj)
+        sums[what] += 1
+    print("Ingest Status:")
+    for (k,v) in sums.items():
+        print(k,v)
 
 s3_logfile = open(S3_LOGFILE_PATH,"a")
 def s3_log_ingest(auth, key):
