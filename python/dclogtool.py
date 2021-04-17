@@ -45,8 +45,10 @@ def import_apache_logfile(auth, logfile):
     cursor.execute("SELECT count(*) from downloads")
     with open(logfile) as f:
         for line in f:
-            obj = weblog.weblog.Weblog(line)
-            weblog.schema.send_weblog(cursor, obj)
+            line = line.strip()
+            if line:
+                obj = weblog.weblog.Weblog(line)
+                weblog.schema.send_weblog(cursor, obj)
 
 BUFSIZE=65536
 def import_s3obj(obj):
@@ -63,10 +65,7 @@ def import_s3obj(obj):
     auth   = obj['auth']
     s3key  = obj['Key']
 
-<<<<<<< HEAD
     # Make sure that this object is in the database.
-=======
->>>>>>> s3-import
     cmd  = "INSERT INTO downloadable (s3key,bytes,mtime,etag) VALUES (%s,%s,%s,%s)"
     vals = (s3key, obj['Size'], obj['LastModified'], obj['ETag'])
     try:
@@ -171,7 +170,6 @@ def add_download(auth, obj):
     Note that the downloads are tracked by key, even though the object identified by the key may change.
     """
     logging.info("obj: %s",obj)
-<<<<<<< HEAD
     dbfile.DBMySQL.csfr(auth,
                         """INSERT INTO downloadable (s3key, bytes) VALUES (%s,%s) """,
                         (obj.key, obj.object_size), ignore=[1062])
@@ -190,25 +188,6 @@ def add_download(auth, obj):
                                %s,%s,%s)
                         """,
                         (obj.key, obj.user_agent, obj.remote_ip, obj.time, obj.bytes_sent))
-=======
-    try:
-        dbfile.DBMySQL.csfr(auth,
-                            """INSERT INTO downloadable (s3key, bytes) VALUES (%s,%s) """,
-                            (obj.key, obj.object_size), nolog=[1062])
-    except pymysql.err.IntegrityError as e:
-        if e.args[0]==1062:
-            # It already exists.
-            pass
-        else:
-            raise RuntimeError(e) from e
-    # Now add the download
-    r = dbfile.DBMySQL.csfr(auth,
-                        """
-                        INSERT INTO downloads (did, remote_ipaddr, dtime)
-                        VALUES ((select id from downloadable where s3key=%s),%s,%s)
-                        """,
-                        (obj.key, obj.remote_ip, obj.time))
->>>>>>> s3-import
     logging.info("object added r=%s key=%s remote_ip=%s time=%s",r,obj.key,obj.remote_ip,obj.time)
 
 
@@ -224,15 +203,11 @@ DEL_OBJECTS = set(['REST.DELETE.OBJECT',
                    'REST.DELETE.UPLOAD',
                    'S3.EXPIRE.OBJECT',
                    ])
-<<<<<<< HEAD
+
 
 GET_OBJECTS = set([ 'REST.GET.OBJECT',
                     'WEBSITE.GET.OBJECT' ])
 
-=======
-GET_OBJECTS = set([ 'REST.GET.OBJECT',
-                    'WEBSITE.GET.OBJECT' ])
->>>>>>> s3-import
 MISC_OBJECTS = set([ 'REST.GET.ACCELERATE',
                      'REST.GET.ACL',
                      'REST.GET.BUCKET',
@@ -323,32 +298,23 @@ def s3_log_ingest(auth, key):
     s3_logfile.flush()
 
 
-<<<<<<< HEAD
 def s3_logs_download(auth, threads=1, limit=sys.maxsize):
-=======
-def s3_logs_download(auth, threads=1):
->>>>>>> s3-import
     """Download an S3 logs and ingest them.
     :param auth: authentication token to write to the database.
     :param threads: number of threads to use
     """
+    count = 0
     q  = queue.Queue()           # forward channel
     bc = queue.Queue()          # backchannel
 
     def worker():
-<<<<<<< HEAD
         nonlocal limit
-=======
->>>>>>> s3-import
         auth2 = copy.deepcopy(auth) # thread local auth
         while True:
             key = q.get()
             try:
                 s3_log_ingest(auth2, key)
-<<<<<<< HEAD
-                limit -= 1
-=======
->>>>>>> s3-import
+                count += 1
             except ValueError as e:
                 logging.error("%s",e)
                 bc.put('DIE')
@@ -367,19 +333,16 @@ def s3_logs_download(auth, threads=1):
     paginator = s3client.get_paginator('list_objects_v2')
     pages = paginator.paginate(Bucket=S3_LOG_BUCKET, Prefix='')
     for page in pages:
-<<<<<<< HEAD
-        if limit<1:
+        if count > limit:
             break
         if 'Contents' not in page:
             continue
         for obj in page.get('Contents'):
-            if limit<1:
+            if count > 0:
                 break
-=======
         if 'Contents' not in page:
             continue
         for obj in page.get('Contents'):
->>>>>>> s3-import
             q.put(obj['Key'])
             try:
                 back = bc.get(block=False)
@@ -444,10 +407,7 @@ if __name__ == "__main__":
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--prod", help="Use production database", action='store_true')
     g.add_argument("--test", help="Use test database", action='store_true')
-<<<<<<< HEAD
     parser.add_argument("--limit", type=int, default=sys.maxsize, help="Limit number of imports to this number")
-=======
->>>>>>> s3-import
 
     clogging.add_argument(parser)
     args = parser.parse_args()
@@ -481,10 +441,7 @@ if __name__ == "__main__":
         print("auth:", auth)
 
     if args.wipe:
-<<<<<<< HEAD
         raise RuntimeError("--wipe is disabled")
-=======
->>>>>>> s3-import
         really = input("really wipe? [y/n]")
         if really[0]!='y':
             print("Will not wipe")
