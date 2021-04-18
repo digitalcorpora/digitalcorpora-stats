@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import urllib.parse
+from collections import defaultdict
 
 import boto3
 import pymysql
@@ -45,12 +46,17 @@ def import_apache_logfile(auth, logfile):
     cursor.execute("SELECT count(*) from downloads")
     with open(logfile) as f:
         for line in f:
-            obj = weblog.weblog.Weblog(line)
-            weblog.schema.send_weblog(cursor, obj)
+            line = line.strip()
+            if line:
+                obj = weblog.weblog.Weblog(line)
+                weblog.schema.send_weblog(cursor, obj)
 
 BUFSIZE=65536
 def import_s3obj(obj):
     """
+    This imports an S3 Object into the database, hashing it if necessary.
+    It does not import S3 download logs. Those are in a different format and are imported by add_download().
+
     Typical obj:
     {'Key': 'corpora/files/2009-audio/media1/media1_27_192kbps_44100Hz_Stereo_art.mp3', 'LastModified': datetime.datetime(2020, 11, 21, 23, 7, 31, tzinfo=tzlocal()), 'ETag': '"3045e3c6a79e791bbacd97a06c27f969"', 'Size': 384429, 'StorageClass': 'INTELLIGENT_TIERING', 'Bucket': 'digitalcorpora'}
     :param auth: authentication object.
@@ -59,8 +65,8 @@ def import_s3obj(obj):
 
     auth   = obj['auth']
     s3key  = obj['Key']
-    # Make sure that this object is in the database.
 
+    # Make sure that this object is in the database.
     cmd  = "INSERT INTO downloadable (s3key,bytes,mtime,etag) VALUES (%s,%s,%s,%s)"
     vals = (s3key, obj['Size'], obj['LastModified'], obj['ETag'])
     try:
@@ -165,24 +171,25 @@ def add_download(auth, obj):
     Note that the downloads are tracked by key, even though the object identified by the key may change.
     """
     logging.info("obj: %s",obj)
-    try:
-        dbfile.DBMySQL.csfr(auth,
-                            """INSERT INTO downloadable (s3key, bytes) VALUES (%s,%s) """,
-                            (obj.key, obj.object_size), nolog=[1062])
-    except pymysql.err.IntegrityError as e:
-        if e.args[0]==1062:
-            # It already exists.
-            pass
-        else:
-            raise RuntimeError(e) from e
+    dbfile.DBMySQL.csfr(auth,
+                        """INSERT INTO downloadable (s3key, bytes) VALUES (%s,%s) """,
+                        (obj.key, obj.object_size), ignore=[1062])
+    # Make sure the browser is in the databse
+    dbfile.DBMySQL.csfr(auth,
+                        """INSERT INTO user_agents (user_agent) VALUES (%s) """,
+                        (obj.user_agent,), ignore=[1062])
+
+
     # Now add the download
     r = dbfile.DBMySQL.csfr(auth,
                         """
-                        INSERT INTO downloads (did, remote_ipaddr, dtime)
-                        VALUES ((select id from downloadable where s3key=%s),%s,%s)
+                        INSERT INTO downloads (did, user_agent_id, remote_ipaddr, dtime, bytes_sent)
+                        VALUES ((select id from downloadable where s3key=%s),
+                                (select id from user_agents where user_agent=%s),
+                               %s,%s,%s)
                         """,
-                        (obj.key, obj.remote_ip, obj.time))
-    logging.info("object added r=%s key=%s remote_ip=%s time=%s",r,obj.key,obj.remote_ip,obj.time)
+                        (obj.key, obj.user_agent, obj.remote_ip, obj.dtime, obj.bytes_sent))
+    logging.info("object added r=%s key=%s remote_ip=%s time=%s",r,obj.key,obj.remote_ip,obj.dtime)
 
 
 seen_dates = set()
@@ -197,6 +204,7 @@ DEL_OBJECTS = set(['REST.DELETE.OBJECT',
                    'REST.DELETE.UPLOAD',
                    'S3.EXPIRE.OBJECT',
                    ])
+
 
 GET_OBJECTS = set([ 'REST.GET.OBJECT',
                     'WEBSITE.GET.OBJECT' ])
@@ -238,40 +246,61 @@ MISC_OBJECTS = set([ 'REST.GET.ACCELERATE',
                      'REST.PUT.VERSIONING',
                      'REST.PUT.WEBSITE',
                      'REST.OPTIONS.PREFLIGHT' ])
+
+DOWNLOAD = 'DOWNLOAD'
+UPLOAD   = 'UPLOAD'
+BAD      = 'BAD'
+DELETED  = 'DELETED'
+MISC     = 'MISC'
+BLOCKED  = 'BLOCKED'
+
+# pylint: disable=R0911
 def obj_ingest(auth, obj):
-    if obj.time.date() not in seen_dates:
-        logging.info("%s",obj.time.date())
-        seen_dates.add(obj.time.date())
+    if obj.dtime.date() not in seen_dates:
+        logging.info("%s",obj.dtime.date())
+        seen_dates.add(obj.dtime.date())
     if obj.operation in GET_OBJECTS:
         if obj.http_status in [200,206]:
             add_download(auth, obj)
+            return DOWNLOAD
         elif obj.http_status in [400,404]:
             # bad URL
-            return
+            return BAD
         elif obj.http_status in [304]:
             # not modified
-            return
+            return BAD
         else:
             # Log that we didn't ingest something, but throw it away
             logging.warning("will not ingest: %s",obj.line)
+            return BAD
     elif obj.operation in WRITE_OBJECTS:
         if obj.http_status in [405]:
             # Write objects blocked.
-            return
-        logging.warning("upload: %s",obj.key)
+            return BLOCKED
+        logging.warning("upload: %s %s %s",obj.dtime,obj.operation,obj.key)
+        return UPLOAD
     elif obj.operation in DEL_OBJECTS:
-        logging.warning("del: %s",obj.key)
+        logging.warning("del: %s %s %s",obj.dtime,obj.operation,obj.key)
+        return DELETED
     elif obj.operation in MISC_OBJECTS:
-        return
+        return MISC
     else:
         raise ValueError(f"Unknown operation {obj.operation} in {obj}")
 
 def s3_logfile_ingest(auth, f):
+    sums = defaultdict(int)
     for (ct,line) in enumerate(f):
+        line = line.strip()
+        if line=='':
+            continue
         if ct%1000==0:
-            logging.info("%s added...",ct)
+            logging.info("%s processed...",ct)
         obj = weblog.weblog.S3Log(line)
-        obj_ingest(auth, obj)
+        what = obj_ingest(auth, obj)
+        sums[what] += 1
+    print("Ingest Status:")
+    for (k,v) in sums.items():
+        print(k,v)
 
 s3_logfile = open(S3_LOGFILE_PATH,"a")
 def s3_log_ingest(auth, key):
@@ -291,20 +320,23 @@ def s3_log_ingest(auth, key):
     s3_logfile.flush()
 
 
-def s3_logs_download(auth, threads=1):
+def s3_logs_download(auth, threads=1, limit=sys.maxsize):
     """Download an S3 logs and ingest them.
     :param auth: authentication token to write to the database.
     :param threads: number of threads to use
     """
+    count = 0
     q  = queue.Queue()           # forward channel
     bc = queue.Queue()          # backchannel
 
     def worker():
+        nonlocal count
         auth2 = copy.deepcopy(auth) # thread local auth
         while True:
             key = q.get()
             try:
                 s3_log_ingest(auth2, key)
+                count += 1
             except ValueError as e:
                 logging.error("%s",e)
                 bc.put('DIE')
@@ -323,6 +355,13 @@ def s3_logs_download(auth, threads=1):
     paginator = s3client.get_paginator('list_objects_v2')
     pages = paginator.paginate(Bucket=S3_LOG_BUCKET, Prefix='')
     for page in pages:
+        if count > limit:
+            break
+        if 'Contents' not in page:
+            continue
+        for obj in page.get('Contents'):
+            if count > 0:
+                break
         if 'Contents' not in page:
             continue
         for obj in page.get('Contents'):
@@ -390,6 +429,7 @@ if __name__ == "__main__":
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--prod", help="Use production database", action='store_true')
     g.add_argument("--test", help="Use test database", action='store_true')
+    parser.add_argument("--limit", type=int, default=sys.maxsize, help="Limit number of imports to this number")
 
     clogging.add_argument(parser)
     args = parser.parse_args()
@@ -423,6 +463,8 @@ if __name__ == "__main__":
         print("auth:", auth)
 
     if args.wipe:
+        # pylint: disable=W0101
+        raise RuntimeError("--wipe is disabled")
         really = input("really wipe? [y/n]")
         if really[0]!='y':
             print("Will not wipe")
@@ -436,7 +478,7 @@ if __name__ == "__main__":
     elif args.hash_s3prefix:
         hash_s3prefix(auth, args.hash_s3prefix, threads=args.threads)
     elif args.s3_download_ingest:
-        s3_logs_download(auth, args.threads)
+        s3_logs_download(auth, args.threads, args.limit)
     elif args.s3_logfile_ingest:
         s3_logfile_ingest( auth, open(args.s3_logfile_ingest))
     elif args.copy:
