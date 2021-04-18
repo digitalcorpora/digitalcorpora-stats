@@ -188,8 +188,8 @@ def add_download(auth, obj):
                                 (select id from user_agents where user_agent=%s),
                                %s,%s,%s)
                         """,
-                        (obj.key, obj.user_agent, obj.remote_ip, obj.time, obj.bytes_sent))
-    logging.info("object added r=%s key=%s remote_ip=%s time=%s",r,obj.key,obj.remote_ip,obj.time)
+                        (obj.key, obj.user_agent, obj.remote_ip, obj.dtime, obj.bytes_sent))
+    logging.info("object added r=%s key=%s remote_ip=%s time=%s",r,obj.key,obj.remote_ip,obj.dtime)
 
 
 seen_dates = set()
@@ -256,9 +256,9 @@ BLOCKED  = 'BLOCKED'
 
 # pylint: disable=R0911
 def obj_ingest(auth, obj):
-    if obj.time.date() not in seen_dates:
-        logging.info("%s",obj.time.date())
-        seen_dates.add(obj.time.date())
+    if obj.dtime.date() not in seen_dates:
+        logging.info("%s",obj.dtime.date())
+        seen_dates.add(obj.dtime.date())
     if obj.operation in GET_OBJECTS:
         if obj.http_status in [200,206]:
             add_download(auth, obj)
@@ -277,10 +277,10 @@ def obj_ingest(auth, obj):
         if obj.http_status in [405]:
             # Write objects blocked.
             return BLOCKED
-        logging.warning("upload: %s %s %s",obj.time,obj.operation,obj.key)
+        logging.warning("upload: %s %s %s",obj.dtime,obj.operation,obj.key)
         return UPLOAD
     elif obj.operation in DEL_OBJECTS:
-        logging.warning("del: %s %s %s",obj.time,obj.operation,obj.key)
+        logging.warning("del: %s %s %s",obj.dtime,obj.operation,obj.key)
         return DELETED
     elif obj.operation in MISC_OBJECTS:
         return MISC

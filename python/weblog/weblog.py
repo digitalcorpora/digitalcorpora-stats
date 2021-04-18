@@ -86,7 +86,7 @@ class S3Log:
     From https://docs.aws.amazon.com/AmazonS3/latest/userguide/LogFormat.html
     We don't decode the all the fields.
     """
-    __slots__ = ['bucket_owner','bucket', 'time', 'remote_ip', 'requester', 'request_id',
+    __slots__ = ['bucket_owner','bucket', 'dtime', 'remote_ip', 'requester', 'request_id',
                  'operation', 'key', 'request_uri', 'http_status', 'error_code', 'bytes_sent', 'object_size',
                  'total_time', 'turn_around_time', 'referer', 'user_agent', 'version_id',
                  'host_id', 'signature_version',
@@ -133,7 +133,7 @@ class S3Log:
             self.line         = line
             self.bucket_owner = parts[0][2]
             self.bucket       = parts[1][2]
-            self.time         = dateutil.parser.parse(parts[2][1].replace(":"," ",1))
+            self.dtime         = dateutil.parser.parse(parts[2][1].replace(":"," ",1))
             self.remote_ip    = parts[3][2]
             self.requester    = parts[4][2]
             self.request_id   = parts[5][2]
@@ -148,4 +148,4 @@ class S3Log:
             setattr(self, k, v)
 
     def __repr__(self):
-        return f"<{type(self)} {self.time} {self.remote_ip} {self.key} {self.http_status}>"
+        return f"<{type(self)} {self.dtime} {self.remote_ip} {self.key} {self.http_status}>"

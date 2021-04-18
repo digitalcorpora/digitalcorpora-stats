@@ -1,9 +1,69 @@
 
-from weblog.weblog import S3Log,Weblog
 import sys
 import logging
 import logging.config
 import yaml
+import os
+import os.path
+
+from weblog.weblog import S3Log,Weblog
+
+def merge(factory, paths, notify, filter_year):
+    """
+    :param factory:  function to take a line and turn it into a weblog object.
+    :param paths:    list of paths to merge
+    :param notify:  Do we report what was merged?
+    :param filter_year: if provided, only use this year.
+    """
+    records = []
+    dates   = []
+    seen    = set()
+    dups    = 0
+
+    def merge_input(path):
+        nonlocal dups,seen,dates,records
+        logging.info('reading %s',path)
+        for line in open(path):
+            line = line.strip()
+            if line=='':
+                continue        # ignore blank lines
+            if line in seen:
+                logging.debug("dup: %s",line)
+                dups += 1
+                continue
+            seen.add(line)
+            obj = factory(line)
+            if (filter_year is not None) and (filter_year != obj.dtime.year):
+                filter_count += 1
+                continue    # filtered
+
+            dates.append(obj.dtime)
+            records.append(obj)
+            if (notify>0) and (len(records) % notify == 0):
+                print(f"{len(records)}...",file=sys.stderr)
+
+    for path in paths:
+        if os.path.isfile(path):
+            merge_input(path)
+        elif os.path.isdir(path):
+            for (root, dirs, files) in os.walk(path):
+                for name in files:
+                    merge_input( os.path.join(root, name))
+
+    if notify>0:
+        print(f"""
+Total read: {len(records)+dups}
+Dups:       {dups}
+Filtered:   {filter_count}
+Date Range: {min(dates)} to {max(dates)}
+Total written: {len(records)}
+
+Now sorting...
+""",file=sys.stderr)
+    records.sort(key=lambda a:a.dtime)
+    for record in records:
+        print(record.line)
+
 
 if __name__=="__main__":
     import argparse
@@ -14,7 +74,7 @@ if __name__=="__main__":
     parser.add_argument("--notify",type=int, default=10000,help='How often to notify; use 0 to suppress')
     parser.add_argument("--debug",action='store_true',help='Enable debugging')
     parser.add_argument("--filter_year", type=int, help='If provided, only pass this year.')
-    parser.add_argument("files",nargs='*',help='input files')
+    parser.add_argument("paths",nargs='*',help='input files or directories')
     args = parser.parse_args()
 
     logging.config.dictConfig( yaml.load(open('logging.yaml'),Loader=yaml.FullLoader))
@@ -26,29 +86,4 @@ if __name__=="__main__":
     if args.merges3:
         factory = S3Log
     if args.merge or args.merges3:
-        records = []
-        seen    = set()
-        dups    = 0
-        for fn in args.files:
-            logging.debug('reading %s',fn)
-            for line in open(fn):
-                if line in seen:
-                    logging.debug("dup: %s",line)
-                    dups += 1
-                    continue
-                obj = factory(line)
-                if (args.filter_year is not None) and (args.filter_year != obj.time.year):
-                    filter_count += 1
-                    continue    # filtered
-
-                records.append(obj)
-                if (args.notify>0) and (len(records) % args.notify == 0):
-                    print(f"{len(records)}...",file=sys.stderr)
-        if args.notify>0:
-            print("Total read: ",len(records)+dups,file=sys.stderr)
-            print("Dups:       ",dups,file=sys.stderr)
-            print("Filtered:   ",filter_count,file=sys.stderr)
-            print("sorting",file=sys.stderr)
-        records.sort(key=lambda a:a.time)
-        for record in records:
-            print(record.line)
+        merge(factory, args.paths, args.notify, args.filter_year)
