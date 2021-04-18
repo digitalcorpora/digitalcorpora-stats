@@ -12,3 +12,10 @@
 - Data is parsed and stored in MySQL database
 - MySQL database is read and output in html file under stats.digitalcorpora.org/reports
 - bad logs will be sorted out, and an error log will be produced containing relevant information
+
+# Tools
+## weblog
+weblog is a python module that offers:
+
+- Uniform parsing of Apache and S3 logs
+- Ability to dedup logs, sort logs, and filter by year.
