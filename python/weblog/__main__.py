@@ -19,9 +19,10 @@ def merge(factory, paths, notify, filter_year):
     dates   = []
     seen    = set()
     dups    = 0
+    filter_count = 0
 
     def merge_input(path):
-        nonlocal dups,seen,dates,records
+        nonlocal dups,seen,dates,records,filter_count
         logging.info('reading %s',path)
         for line in open(path):
             line = line.strip()
@@ -78,8 +79,6 @@ if __name__=="__main__":
     args = parser.parse_args()
 
     logging.config.dictConfig( yaml.load(open('logging.yaml'),Loader=yaml.FullLoader))
-
-    filter_count = 0
 
     if args.merge:
         factory = Weblog
