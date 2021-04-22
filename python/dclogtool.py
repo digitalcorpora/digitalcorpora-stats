@@ -24,7 +24,6 @@ import pymysql
 
 from botocore import UNSIGNED
 from botocore.client import Config
-#from botocore.exceptions import ClientError
 
 import weblog.schema
 import weblog.weblog
@@ -39,17 +38,6 @@ year = datetime.datetime.now().year
 S3_LOG_BUCKET = 'digitalcorpora-logs'
 S3_LOGFILE_PATH = os.path.join( os.getenv("HOME"), "s3logs", f"s3logs.{year}.log")
 
-def import_apache_logfile(auth, logfile):
-    # see if the schema is present. If not, send it with the wipe command
-    db = dbfile.DBMySQL(auth)
-    cursor = db.cursor()
-    cursor.execute("SELECT count(*) from downloads")
-    with open(logfile) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                obj = weblog.weblog.Weblog(line)
-                weblog.schema.send_weblog(cursor, obj)
 
 BUFSIZE=65536
 def import_s3obj(obj):
@@ -287,7 +275,12 @@ def obj_ingest(auth, obj):
     else:
         raise ValueError(f"Unknown operation {obj.operation} in {obj}")
 
-def s3_logfile_ingest(auth, f):
+def logfile_ingest(auth, f, factory):
+    """Given a logfile, ingest it into the database.
+    :param auth: database authentication token
+    :param f: input file
+    :param factory: function that parses a logfile recorded to a weblog object
+    """
     sums = defaultdict(int)
     for (ct,line) in enumerate(f):
         line = line.strip()
@@ -295,7 +288,7 @@ def s3_logfile_ingest(auth, f):
             continue
         if ct%1000==0:
             logging.info("%s processed...",ct)
-        obj = weblog.weblog.S3Log(line)
+        obj  = factory(line)
         what = obj_ingest(auth, obj)
         sums[what] += 1
     print("Ingest Status:")
@@ -415,8 +408,8 @@ if __name__ == "__main__":
     parser.add_argument("--verbose", action='store_true')
     parser.add_argument("--threads", "-j", type=int, default=1)
     g = parser.add_mutually_exclusive_group(required=True)
-    g.add_argument("--apache_logfile", help="Apache combined log file to import (currently not working)")
-    g.add_argument("--hash_s3prefix", help="Hash all of the new objects under a given S3 prefix")
+    g.add_argument("--apache_logfile_ingest", help="Apache combined log file to import (currently not working)")
+    g.add_argument("--hash_s3prefix",         help="Hash all of the new objects under a given S3 prefix")
     g.add_argument("--s3_download_ingest", action='store_true',
                         help='download S3 logs to local directory, combine into local logfile, and ingest')
     g.add_argument("--s3_logfile_ingest",
@@ -473,14 +466,14 @@ if __name__ == "__main__":
         db.create_schema(open("schema.sql", "r").read())
 
     ctools.lock.lock_script()
-    if args.apache_logfile:
-        import_apache_logfile(auth, args.apache_logfile)
+    if args.apache_logfile_ingest:
+        logfile_ingest(auth, open(args.apache_logfile_ingest), weblog.weblog.Weblog)
     elif args.hash_s3prefix:
         hash_s3prefix(auth, args.hash_s3prefix, threads=args.threads)
     elif args.s3_download_ingest:
         s3_logs_download(auth, args.threads, args.limit)
     elif args.s3_logfile_ingest:
-        s3_logfile_ingest( auth, open(args.s3_logfile_ingest))
+        logfile_ingest( auth, open(args.s3_logfile_ingest), weblog.weblog.S3Log)
     elif args.copy:
         db_copy( auth )
     else:
