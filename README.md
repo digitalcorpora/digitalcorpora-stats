@@ -1,3 +1,4 @@
+[![codecov](https://codecov.io/gh/digitalcorpora/digitalcorpora-stats/branch/master/graph/badge.svg?token=rEVoZlToSm)](https://codecov.io/gh/digitalcorpora/digitalcorpora-stats)
 # digitalcorpora-stats
 - Designing to parse Apache logfiles for digitalcorpora.org
 

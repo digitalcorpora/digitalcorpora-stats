@@ -38,6 +38,7 @@ year = datetime.datetime.now().year
 S3_LOG_BUCKET = 'digitalcorpora-logs'
 S3_LOGFILE_PATH = os.path.join( os.getenv("HOME"), "s3logs", f"s3logs.{year}.log")
 
+
 BUFSIZE=65536
 def import_s3obj(obj):
     """
@@ -287,7 +288,7 @@ def logfile_ingest(auth, f, factory):
             continue
         if ct%1000==0:
             logging.info("%s processed...",ct)
-        obj = factory(line)
+        obj  = factory(line)
         what = obj_ingest(auth, obj)
         sums[what] += 1
     print("Ingest Status:")
