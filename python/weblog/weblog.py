@@ -21,6 +21,13 @@ def safe_int(s):
     except ValueError:
         return None
 
+def clean_date(s):
+    s = s.replace(':', ' ', 1)
+    bracket = s.find(']')
+    if bracket > 0:
+        s = s[0:bracket]
+    return s
+
 class Weblog:
     """Class that parses an Apache Combined Log File format file and returns tuple.
     See https://httpd.apache.org/docs/2.4/logs.html for log file format
@@ -40,7 +47,7 @@ class Weblog:
         self.ipaddr    = m.group(1)
         self.ident     = m.group(2)
         self.user      = m.group(3)
-        self.dtime     = dateutil.parser.parse(m.group(4).replace(':', ' ', 1))
+        self.dtime     = dateutil.parser.parse( clean_date(m.group(4)))
         self.request   = m.group(5)
         self.result    = safe_int(m.group(6))
         self.bytes     = safe_int(m.group(7))
