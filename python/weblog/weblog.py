@@ -32,8 +32,8 @@ class Weblog:
     """Class that parses an Apache Combined Log File format file and returns tuple.
     See https://httpd.apache.org/docs/2.4/logs.html for log file format
     """
-    __slots__  = ['ipaddr', 'ident', 'user', 'dtime', 'request', 'result',
-                  'bytes', 'agent', 'referrer', 'method', 'url']
+    __slots__  = ['remote_ip', 'ident', 'user', 'dtime', 'request', 'result', 'http_status',
+                  'bytes_sent', 'user_agent', 'referrer', 'method', 'url', 'line', 'operation', 'key', 'object_size']
     CLF_REGEX  = r'([(\d\.):]+) ([^ ]+) ([^ ]+) \[(.*)\] "(.*)" (\d+) (\d+|-)( "[^"]*")?( "[^"]*")?'
     CLF_RE     = re.compile(CLF_REGEX)
     WIKIPAGE_PATS = [re.compile(x) for x in [r"index.php\?title=([^ &]*)", "/wiki/([^ &]*)"]]
@@ -44,21 +44,23 @@ class Weblog:
         m = self.CLF_RE.match(line)
         if not m:
             raise ValueError("invalid logfile line: " + line)
-        self.ipaddr    = m.group(1)
+        self.line      = line
+        self.operation = 'WEBSITE.GET.OBJECT'
+        self.remote_ip    = m.group(1)
         self.ident     = m.group(2)
         self.user      = m.group(3)
         self.dtime     = dateutil.parser.parse( clean_date(m.group(4)))
         self.request   = m.group(5)
         self.result    = safe_int(m.group(6))
-        self.bytes     = safe_int(m.group(7))
+        self.bytes_sent     = safe_int(m.group(7))
         try:
             self.referrer  = m.group(8)[2:-1]  # remove the space and quotes
         except (IndexError, TypeError):
             self.referrer  = None
         try:
-            self.agent     = m.group(9)[2:-1]  # remove the quotes
+            self.user_agent     = m.group(9)[2:-1]  # remove the quotes
         except (IndexError, TypeError):
-            self.agent    = None
+            self.user_agent    = None
 
         # Now compute the derrived fields
         request_fields = self.request.split(" ")
@@ -67,6 +69,12 @@ class Weblog:
             self.url    = request_fields[1]
         except IndexError:
             self.url    = None
+
+        # S3 compatiability
+        self.http_status = self.result
+        self.key       = self.path
+        self.object_size = self.bytes_sent
+
 
     def wikipage(self):
         """Returns the wikipage referenced, or None"""
