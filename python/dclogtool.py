@@ -305,7 +305,6 @@ def s3_logfile_ingest(auth, f):
     for (k,v) in sums.items():
         print(k,v)
 
-s3_logfile = open(S3_LOGFILE_PATH,"a")
 def s3_log_ingest(auth, key):
     """Given an s3 key, ingest each of its records, and them to the databse, and then delete it.
     :param auth: authentication token to write to the database
@@ -315,12 +314,13 @@ def s3_log_ingest(auth, key):
     s3client  = boto3.client('s3')
     o2   = s3client.get_object(Bucket=S3_LOG_BUCKET, Key=key)
     line_stream = codecs.getreader("utf-8")
-    for line in line_stream(o2['Body']):
-        obj = weblog.weblog.S3Log(line)
-        obj_ingest(auth, obj)
-        s3_logfile.write(line)
-    s3client.delete_object(Bucket=S3_LOG_BUCKET, Key=key)
-    s3_logfile.flush()
+    with open(S3_LOGFILE_PATH,"a") as s3_logfile:
+        for line in line_stream(o2['Body']):
+            obj = weblog.weblog.S3Log(line)
+            obj_ingest(auth, obj)
+            s3_logfile.write(line)
+        s3client.delete_object(Bucket=S3_LOG_BUCKET, Key=key)
+        s3_logfile.flush()
 
 
 def s3_logs_download(auth, threads=1, limit=sys.maxsize):
