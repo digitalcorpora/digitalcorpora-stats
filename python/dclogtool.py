@@ -266,6 +266,9 @@ def obj_ingest(auth, obj):
         elif obj.http_status in [400,404]:
             # bad URL
             return BAD
+        elif obj.http_status in [416]:
+            # Bad Range
+            return BAD
         elif obj.http_status in [304]:
             # not modified
             return BAD
