@@ -17,3 +17,6 @@ coverage:
 
 pytest:
 	(cd python; make pytest)
+
+check:
+	make pytest

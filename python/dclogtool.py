@@ -39,6 +39,11 @@ year = datetime.datetime.now().year
 S3_LOG_BUCKET = 'digitalcorpora-logs'
 S3_LOGFILE_PATH = os.path.join( os.getenv("HOME"), "s3logs", f"s3logs.{year}.log")
 
+def sigalrm_handler(num, stack):
+    print("Received SIGALARM [%s]" % num)
+    print(stack)
+    raise Exception("Timeout")
+
 def import_apache_logfile(auth, logfile):
     # see if the schema is present. If not, send it with the wipe command
     db = dbfile.DBMySQL(auth)
@@ -238,7 +243,9 @@ MISC_OBJECTS = set([ 'REST.GET.ACCELERATE',
                      'S3.TRANSITION_INT.OBJECT',
                      'REST.HEAD.OBJECT',
                      'WEBSITE.HEAD.OBJECT',
+                     'WEBSITE.INVALIDOPERATION',
                      'REST.HEAD.BUCKET',
+                     'REST.POST.BUCKET',
                      'REST.PUT.BUCKETPOLICY',
                      'REST.PUT.LOGGING_STATUS',
                      'REST.PUT.METRICS',
@@ -272,6 +279,9 @@ def obj_ingest(auth, obj):
         elif obj.http_status in [304]:
             # not modified
             return BAD
+        elif obj.http_status in [301]:
+            # moved permanently?
+            return BAD
         else:
             # Log that we didn't ingest something, but throw it away
             logging.warning("will not ingest: %s",obj.line)
@@ -280,7 +290,7 @@ def obj_ingest(auth, obj):
         if obj.http_status in [405]:
             # Write objects blocked.
             return BLOCKED
-        logging.warning("upload: %s %s %s",obj.time,obj.operation,obj.key)
+        logging.warning("upload: %s %s %s from %s (status: %s)",obj.time,obj.operation,obj.key,obj.remote_ip,obj.http_status)
         return UPLOAD
     elif obj.operation in DEL_OBJECTS:
         logging.warning("del: %s %s %s",obj.time,obj.operation,obj.key)
@@ -325,6 +335,7 @@ def s3_log_ingest(auth, key):
 
 def s3_logs_download(auth, threads=1, limit=sys.maxsize):
     """Download an S3 logs and ingest them.
+    Runs in the main thread.
     :param auth: authentication token to write to the database.
     :param threads: number of threads to use
     """
@@ -333,6 +344,7 @@ def s3_logs_download(auth, threads=1, limit=sys.maxsize):
     bc = queue.Queue()          # backchannel
 
     def worker():
+        """Runs in the worker thread"""
         nonlocal count
         auth2 = copy.deepcopy(auth) # thread local auth
         while True:
@@ -346,10 +358,11 @@ def s3_logs_download(auth, threads=1, limit=sys.maxsize):
             q.task_done()
 
 
-    def handler(signum, _frame):
+    def sigint_handler(signum, _frame):
         if signum==signal.SIGINT:
             bc.put('DIE')
-    signal.signal(signal.SIGINT, handler)
+    signal.signal(signal.SIGINT,  sigint_handler)
+    signal.signal(signal.SIGALRM, sigalrm_handler)
 
     # Start the threads
     for _ in range(threads):
@@ -358,6 +371,8 @@ def s3_logs_download(auth, threads=1, limit=sys.maxsize):
     paginator = s3client.get_paginator('list_objects_v2')
     pages = paginator.paginate(Bucket=S3_LOG_BUCKET, Prefix='')
     for page in pages:
+        # Each time through, extend the alarm by 2 minutes
+        signal.alarm(120)
         if count > limit:
             break
         if 'Contents' not in page:
@@ -382,6 +397,9 @@ def s3_logs_download(auth, threads=1, limit=sys.maxsize):
     # Don't bother killing the workers.
     q.join()
 
+    # Clear the alarm
+    signal.alarm(0)
+
 def db_copy( auth ):
     """Copy the downloads from the dev database to the production database.
     This was created because I accidentally committed to the production database.
@@ -389,7 +407,12 @@ def db_copy( auth ):
     """
     db = dbfile.DBMySQL(auth)
     c = db.cursor()
-    c.execute("SELECT b.s3key,b.bytes, a.remote_ipaddr,a.dtime FROM dcstats_test.downloads a RIGHT JOIN downloadable b ON a.did=b.id where (a.remote_ipaddr is not null) and (a.dtime is not null) ")
+    c.execute(
+        """
+        SELECT b.s3key,b.bytes, a.remote_ipaddr,a.dtime
+        FROM dcstats_test.downloads a
+        RIGHT JOIN downloadable b ON a.did=b.id where (a.remote_ipaddr is not null) and (a.dtime is not null)
+        """)
     count = 0
     for (s3key,object_size,remote_ip,dtime) in c.fetchall():
         count += 1
