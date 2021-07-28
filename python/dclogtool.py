@@ -287,7 +287,7 @@ def obj_ingest(auth, obj):
             logging.warning("will not ingest: %s",obj.line)
             return BAD
     elif obj.operation in WRITE_OBJECTS:
-        if obj.http_status in [405]:
+        if obj.http_status//100 in [400]:
             # Write objects blocked.
             return BLOCKED
         logging.warning("upload: %s %s %s from %s (status: %s)",obj.time,obj.operation,obj.key,obj.remote_ip,obj.http_status)
