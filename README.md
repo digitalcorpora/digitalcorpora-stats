@@ -1,4 +1,13 @@
 [![codecov](https://codecov.io/gh/digitalcorpora/digitalcorpora-stats/branch/master/graph/badge.svg?token=rEVoZlToSm)](https://codecov.io/gh/digitalcorpora/digitalcorpora-stats)
+# Getting going on a new VM
+```
+sudo yum install git emacs && git clone --recursive git@github.com:digitalcorpo\
+ra/digitalcorpora-stats.git
+cd digitalcorpora-stats
+make install-dependencies
+make check
+```
+
 # digitalcorpora-stats
 - Designing to parse Apache logfiles for digitalcorpora.org
 
