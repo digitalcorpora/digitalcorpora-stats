@@ -29,8 +29,10 @@ import weblog.schema
 import weblog.weblog
 
 import aws_secrets
-import ctools.dbfile as dbfile
-import ctools.clogging as clogging
+# import ctools.dbfile as dbfile
+# import ctools.clogging as clogging
+from ctools import dbfile
+from ctools import clogging
 import ctools.lock
 
 year = datetime.datetime.now().year

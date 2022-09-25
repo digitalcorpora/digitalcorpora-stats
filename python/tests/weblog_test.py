@@ -24,46 +24,46 @@ S3LOG_LINE2 = '938c42948af97101ff5ecad73349fb9034d92563dede79b306da5fb954759e8b 
 
 def test_line1():
     log = Weblog(LINE1)
-    assert log.ipaddr == '77.88.5.184'
+    assert log.remote_ip == '77.88.5.184'
     assert log.dtime.year == 2020
     assert log.dtime.month == 6
     assert log.dtime.day == 21
     assert log.method == 'GET'
     assert log.url == '/'
     assert log.result == 401
-    assert log.bytes == 4110
+    assert log.bytes_sent == 4110
     assert log.referrer == '-'
-    assert log.agent == "Mozilla/5.0 (compatible; YandexBot/3.0; +http://yandex.com/bots)"
+    assert log.user_agent == "Mozilla/5.0 (compatible; YandexBot/3.0; +http://yandex.com/bots)"
     assert log.is_download() is False
 
 
 def test_line2():
     log = Weblog(LINE2)
-    assert log.ipaddr == '129.174.125.204'
+    assert log.remote_ip == '129.174.125.204'
     assert log.dtime.year == 2019
     assert log.dtime.month == 6
     assert log.dtime.day == 16
     assert log.method == 'GET'
     assert log.url == '/downloads/tcpflow/'
     assert log.result == 200
-    assert log.bytes == 971
+    assert log.bytes_sent == 971
     assert log.referrer == '-'
-    assert log.agent == "Anitya 0.15.1 at release-monitoring.org"
+    assert log.user_agent == "Anitya 0.15.1 at release-monitoring.org"
     assert log.is_download() is False
 
 
 def test_line3():
     log = Weblog(LINE3)
-    assert log.ipaddr == '129.174.125.204'
+    assert log.remote_ip == '129.174.125.204'
     assert log.dtime.year == 2019
     assert log.dtime.month == 6
     assert log.dtime.day == 16
     assert log.method == 'GET'
     assert log.url == '/corpora/scenarios/2009-m57-patents/'
     assert log.result == 200
-    assert log.bytes == 3812
+    assert log.bytes_sent == 3812
     assert log.referrer == 'http://downloads.digitalcorpora.org/corpora/scenarios/2009-m57-patents/drives-redacted/'
-    assert log.agent == "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36"
+    assert log.user_agent == "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36"
     assert log.is_download() is False
 
 
@@ -85,7 +85,7 @@ def test_s3log():
     s1 = S3Log(S3LOG_LINE1)
     assert s1.bucket_owner == '938c42948af97101ff5ecad73349fb9034d92563dede79b306da5fb954759e8b'
     assert s1.bucket       == 'digitalcorpora'
-    assert s1.time         == datetime.datetime(2021,2,19,18,24,7,tzinfo=tzutc())
+    assert s1.dtime         == datetime.datetime(2021,2,19,18,24,7,tzinfo=tzutc())
     assert s1.remote_ip    == '40.77.139.20'
     assert s1.operation    == REST_GET_OBJECT
     assert s1.key          == 'corpora/scenarios/2012-ngdc/extra/carry-phone-ftk/carry-phone-FTK-2012-07-03.E01'
