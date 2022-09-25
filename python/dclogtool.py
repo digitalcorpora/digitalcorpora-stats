@@ -109,10 +109,11 @@ def hash_s3prefix(auth, s3prefix, threads=40):
     # (Because of MD5 collisions, we check both etag and mtime)
     # We need to use our own auth because we don't want it activated
     auth2 = copy.deepcopy(auth)
+    lk = p.path[1:] +"%"
     rows = dbfile.DBMySQL.csfr(auth2,
                                """select s3key,etag,mtime from downloadable
                                WHERE s3key LIKE %s AND (sha2_256 IS NOT NULL) AND (sha3_256 IS NOT NULL)
-                               """, (p.path[1:] +"%"))
+                               """, (lk,))
     logging.info("found %d entries in database with hashes", len(rows))
     hashed = {row[0]: {'ETag': row[1], 'mtime': row[2]} for row in rows}
 
@@ -123,7 +124,11 @@ def hash_s3prefix(auth, s3prefix, threads=40):
     objs = []
     already_hashed = 0
     for page in pages:
-        for obj in page.get('Contents'):
+        contents = page.get('Contents')
+        if contents is None:
+            logging.error("no objects with prefix %s", s3prefix)
+            continue
+        for obj in contents:
             s3key = obj['Key']
             try:
                 t1 = obj['LastModified'].replace(tzinfo=None)
@@ -297,8 +302,7 @@ def logfile_ingest(auth, f, factory):
     for (k,v) in sums.items():
         print(k,v)
 
-s3_logfile = open(S3_LOGFILE_PATH,"a")
-def s3_log_ingest(auth, key):
+def s3_log_ingest(s3_logfile, auth, key):
     """Given an s3 key, ingest each of its records, and them to the databse, and then delete it.
     :param auth: authentication token to write to the database
     :param key: key of the logfile
@@ -324,13 +328,14 @@ def s3_logs_download(auth, threads=1, limit=sys.maxsize):
     q  = queue.Queue()           # forward channel
     bc = queue.Queue()          # backchannel
 
+    s3_logfile = open(S3_LOGFILE_PATH,"a")
     def worker():
         nonlocal count
         auth2 = copy.deepcopy(auth) # thread local auth
         while True:
             key = q.get()
             try:
-                s3_log_ingest(auth2, key)
+                s3_log_ingest(s3_logfile,auth2, key)
                 count += 1
             except ValueError as e:
                 logging.error("%s",e)
