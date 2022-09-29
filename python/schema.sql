@@ -1,8 +1,8 @@
--- MySQL dump 10.13  Distrib 5.7.33, for Linux (x86_64)
+-- MySQL dump 10.14  Distrib 5.5.68-MariaDB, for Linux (x86_64)
 --
--- Host: mysql.digitalcorpora.org    Database: dcstats
+-- Host: mysql.simson.net    Database: dcstats
 -- ------------------------------------------------------
--- Server version	5.7.29-log
+-- Server version	8.0.28-0ubuntu0.20.04.3
 
 /*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
 /*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
@@ -23,10 +23,10 @@ DROP TABLE IF EXISTS `downloadable`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!40101 SET character_set_client = utf8 */;
 CREATE TABLE `downloadable` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `id` int NOT NULL AUTO_INCREMENT,
   `s3key` varchar(768) NOT NULL,
   `modified` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `bytes` bigint(20) DEFAULT NULL,
+  `bytes` bigint DEFAULT NULL,
   `mtime` timestamp NULL DEFAULT NULL,
   `tags` json DEFAULT NULL,
   `etag` varchar(64) DEFAULT NULL,
@@ -39,7 +39,7 @@ CREATE TABLE `downloadable` (
   KEY `etag` (`etag`),
   KEY `sha2_256` (`sha2_256`),
   KEY `sha3_256` (`sha3_256`)
-) ENGINE=InnoDB AUTO_INCREMENT=231700 DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB AUTO_INCREMENT=7618239 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -50,48 +50,36 @@ DROP TABLE IF EXISTS `downloads`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!40101 SET character_set_client = utf8 */;
 CREATE TABLE `downloads` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
-  `did` int(11) NOT NULL,
-  `ipaddr` varchar(64) NOT NULL,
+  `id` int NOT NULL AUTO_INCREMENT,
+  `did` int NOT NULL,
+  `user_agent_id` int DEFAULT NULL,
+  `remote_ipaddr` varchar(64) DEFAULT NULL,
   `dtime` datetime NOT NULL,
+  `bytes_sent` int DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `did` (`did`),
-  KEY `ipaddr` (`ipaddr`),
+  KEY `ipaddr` (`remote_ipaddr`),
   KEY `dtime` (`dtime`),
-  CONSTRAINT `downloads_ibfk_1` FOREIGN KEY (`did`) REFERENCES `downloadable` (`id`)
-) ENGINE=InnoDB AUTO_INCREMENT=218413 DEFAULT CHARSET=utf8mb4;
+  KEY `bytes_sent` (`bytes_sent`),
+  KEY `user_agent_id` (`user_agent_id`),
+  CONSTRAINT `downloads_ibfk_1` FOREIGN KEY (`did`) REFERENCES `downloadable` (`id`),
+  CONSTRAINT `downloads_ibfk_2` FOREIGN KEY (`user_agent_id`) REFERENCES `user_agents` (`id`)
+) ENGINE=InnoDB AUTO_INCREMENT=9481656 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Table structure for table `logfile`
+-- Table structure for table `user_agents`
 --
 
-DROP TABLE IF EXISTS `logfile`;
+DROP TABLE IF EXISTS `user_agents`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!40101 SET character_set_client = utf8 */;
-CREATE TABLE `logfile` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
-  `path` varchar(255) NOT NULL,
-  `hash_first64k` varchar(255) NOT NULL,
-  `offset` int(11) NOT NULL,
+CREATE TABLE `user_agents` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `user_agent` varchar(128) DEFAULT NULL,
   PRIMARY KEY (`id`),
-  KEY `path` (`path`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
--- Table structure for table `tags`
---
-
-DROP TABLE IF EXISTS `tags`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!40101 SET character_set_client = utf8 */;
-CREATE TABLE `tags` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
-  `tag` json NOT NULL,
-  `description` varchar(255) NOT NULL,
-  PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  KEY `user_agent` (`user_agent`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
@@ -103,4 +91,4 @@ CREATE TABLE `tags` (
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2021-03-21  8:43:20
+-- Dump completed on 2022-09-28 19:45:36

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-digitalcorpora log tool.
+digitalcorpora log, hashing, and maintenance tool. 
+Performs any activity requiring write access to the database.
+
 
 """
 
@@ -39,7 +41,6 @@ year = datetime.datetime.now().year
 
 S3_LOG_BUCKET = 'digitalcorpora-logs'
 S3_LOGFILE_PATH = os.path.join( os.getenv("HOME"), "s3logs", f"s3logs.{year}.log")
-
 
 BUFSIZE=65536
 def import_s3obj(obj):
@@ -406,6 +407,55 @@ def db_copy( auth ):
     print("total:",count)
 
 
+def db_gc( auth, s3prefix ):
+    db = dbfile.DBMySQL( auth )
+    c = db.cursor()
+    c.execute("SELECT s3key, id FROM downloadable")
+    s3keys_in_db = {row[0]:row[1] for row in c.fetchall() }
+    print("keys in database:",len(s3keys_in_db))
+
+    # Now get the list of objects in S3
+    p = urllib.parse.urlparse(s3prefix)
+    s3client  = boto3.client('s3', config=Config(signature_version=UNSIGNED))
+    paginator = s3client.get_paginator('list_objects_v2')
+    pages = paginator.paginate(Bucket=p.netloc, Prefix=p.path[1:])
+    count = 0
+    for page in pages:
+        for obj in page.get('Contents'):
+            s3key = obj['Key']
+            if s3key not in s3keys_in_db:
+                print("missing:",s3key)
+            else:
+                del s3keys_in_db[s3key]
+            count += 1
+    print("Objects in s3:",count)
+    print("Objects no longer in S3:",len(s3keys_in_db))
+
+    # Now, find all of downloadable IDs in the database that are also in the downloads table
+    not_present = ",".join( (str(s) for s in sorted(s3keys_in_db.values()) ) )
+    cmd = f"SELECT DISTINCT did FROM downloads WHERE did IN ({not_present})"
+    c.execute( cmd )
+    ids_that_were_downloaded = set([row[0] for row in c.fetchall()])
+    print("Number of ids that were downloaded:",len(ids_that_were_downloaded))
+    ids_not_downloaded = set(s3keys_in_db.values()).difference(ids_that_were_downloaded)
+    print("Number of ids that were not downloaded:",len(ids_not_downloaded))
+    print("Not downloaded and deletable:")
+    count = 0
+    s3keys_cant_delete = dict()
+    for (k,v) in sorted(s3keys_in_db.items()):
+        if v in ids_not_downloaded:
+            print(f"delete from downloadable id {v} path {k}")
+            count += 1
+        else:
+            s3keys_cant_delete[k] = v
+    print("Not downloaded and deletable:",count)
+    print("Downloaded at least once and therefore not deletable:",len(s3keys_cant_delete))
+    print("Setting them present=0")
+    not_present = ",".join( (str(s) for s in sorted(s3keys_cant_delete.values()) ) )
+    cmd = f"UPDATE downloadable SET present=0 WHERE id IN ({not_present})"
+    c.execute(cmd)
+
+    
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Import the Digital Corpora logs.',
@@ -413,7 +463,7 @@ if __name__ == "__main__":
     parser.add_argument("--wipe", help="Wipe database and load a new schema", action='store_true')
     parser.add_argument("--debug", action='store_true')
     parser.add_argument("--verbose", action='store_true')
-    parser.add_argument("--threads", "-j", type=int, default=1)
+    parser.add_argument("--threads", "-j", type=int, default=3)
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--apache_logfile_ingest", help="Apache combined log file to import (currently not working)")
     g.add_argument("--hash_s3prefix",         help="Hash all of the new objects under a given S3 prefix")
@@ -423,6 +473,7 @@ if __name__ == "__main__":
                         help='ingest an already downloaded s3 logfile')
     g.add_argument("--copy", action='store_true',
                    help='Copy downloads from test to prod that are not present in prod')
+    g.add_argument("--gc", action='store_true', help='Garbage collect the MySQL database')
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--aws", help="Get database password from aws secrets system", action='store_true')
     g.add_argument("--env", help="Get database password from environment variables", action='store_true')
@@ -443,6 +494,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     database = "dcstats_test" if not args.prod else 'dcstats'
+    # Select the authentication approach
     if args.aws:
         s = aws_secrets.get_secret()
         auth = dbfile.DBMySQLAuth(host=s['host'],
@@ -462,6 +514,7 @@ if __name__ == "__main__":
     if auth.debug:
         print("auth:", auth)
 
+    # We won't want to do this ever
     if args.wipe:
         # pylint: disable=W0101
         raise RuntimeError("--wipe is disabled")
@@ -472,7 +525,10 @@ if __name__ == "__main__":
         db = dbfile.DBMySQL(auth)
         db.create_schema(open("schema.sql", "r").read())
 
+    # Don't allow another copy to run the script
     ctools.lock.lock_script()
+
+    # Do what we are supposed to do
     if args.apache_logfile_ingest:
         logfile_ingest(auth, open(args.apache_logfile_ingest), weblog.weblog.Weblog)
     elif args.hash_s3prefix:
@@ -483,5 +539,7 @@ if __name__ == "__main__":
         logfile_ingest( auth, open(args.s3_logfile_ingest), weblog.weblog.S3Log)
     elif args.copy:
         db_copy( auth )
+    elif args.gc:
+        db_gc( auth, "s3://digitalcorpora/" )
     else:
         raise RuntimeError("Unknown action")
