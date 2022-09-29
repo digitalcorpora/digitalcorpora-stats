@@ -1,5 +1,4 @@
 [![codecov](https://codecov.io/gh/digitalcorpora/digitalcorpora-stats/branch/master/graph/badge.svg?token=rEVoZlToSm)](https://codecov.io/gh/digitalcorpora/digitalcorpora-stats)
-
 This repo computes hash codes for the digitalcorpora collection stored in the s3://digitalcopora/ s3 bucket. It also downloads the bucket statistics and updates the SQL database. Becuase it has write access to the MySQL database, it runs under a different user than the https://github.com/digitalcorpora/app repo.
 
 You can even run it in a specially-created VM.
