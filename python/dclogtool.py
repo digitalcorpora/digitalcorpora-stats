@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-digitalcorpora log tool.
+digitalcorpora log, hashing, and maintenance tool. 
+Performs any activity requiring write access to the database.
+
 
 """
 
@@ -24,14 +26,15 @@ import pymysql
 
 from botocore import UNSIGNED
 from botocore.client import Config
-#from botocore.exceptions import ClientError
 
 import weblog.schema
 import weblog.weblog
 
 import aws_secrets
-import ctools.dbfile as dbfile
-import ctools.clogging as clogging
+# import ctools.dbfile as dbfile
+# import ctools.clogging as clogging
+from ctools import dbfile
+from ctools import clogging
 import ctools.lock
 
 year = datetime.datetime.now().year
@@ -124,10 +127,11 @@ def hash_s3prefix(auth, s3prefix, threads=40):
     # (Because of MD5 collisions, we check both etag and mtime)
     # We need to use our own auth because we don't want it activated
     auth2 = copy.deepcopy(auth)
+    lk = p.path[1:] +"%"
     rows = dbfile.DBMySQL.csfr(auth2,
                                """select s3key,etag,mtime from downloadable
                                WHERE s3key LIKE %s AND (sha2_256 IS NOT NULL) AND (sha3_256 IS NOT NULL)
-                               """, (p.path[1:] +"%"))
+                               """, (lk,))
     logging.info("found %d entries in database with hashes", len(rows))
     hashed = {row[0]: {'ETag': row[1], 'mtime': row[2]} for row in rows}
 
@@ -138,7 +142,11 @@ def hash_s3prefix(auth, s3prefix, threads=40):
     objs = []
     already_hashed = 0
     for page in pages:
-        for obj in page.get('Contents'):
+        contents = page.get('Contents')
+        if contents is None:
+            logging.error("no objects with prefix %s", s3prefix)
+            continue
+        for obj in contents:
             s3key = obj['Key']
             try:
                 t1 = obj['LastModified'].replace(tzinfo=None)
@@ -193,8 +201,8 @@ def add_download(auth, obj):
                                 (select id from user_agents where user_agent=%s),
                                %s,%s,%s)
                         """,
-                        (obj.key, obj.user_agent, obj.remote_ip, obj.time, obj.bytes_sent))
-    logging.info("object added r=%s key=%s remote_ip=%s time=%s",r,obj.key,obj.remote_ip,obj.time)
+                        (obj.key, obj.user_agent, obj.remote_ip, obj.dtime, obj.bytes_sent))
+    logging.info("object added r=%s key=%s remote_ip=%s time=%s", r, obj.key, obj.remote_ip, obj.dtime)
 
 
 seen_dates = set()
@@ -263,9 +271,9 @@ BLOCKED  = 'BLOCKED'
 
 # pylint: disable=R0911
 def obj_ingest(auth, obj):
-    if obj.time.date() not in seen_dates:
-        logging.info("%s",obj.time.date())
-        seen_dates.add(obj.time.date())
+    if obj.dtime.date() not in seen_dates:
+        logging.info("%s",obj.dtime.date())
+        seen_dates.add(obj.dtime.date())
     if obj.operation in GET_OBJECTS:
         if obj.http_status in [200,206]:
             add_download(auth, obj)
@@ -282,6 +290,9 @@ def obj_ingest(auth, obj):
         elif obj.http_status in [301]:
             # moved permanently?
             return BAD
+        elif obj.http_status in [304]:
+            # not modified
+            return BAD
         else:
             # Log that we didn't ingest something, but throw it away
             logging.warning("will not ingest: %s",obj.line)
@@ -290,17 +301,22 @@ def obj_ingest(auth, obj):
         if obj.http_status//100 in [400]:
             # Write objects blocked.
             return BLOCKED
-        logging.warning("upload: %s %s %s from %s (status: %s)",obj.time,obj.operation,obj.key,obj.remote_ip,obj.http_status)
+        logging.warning("upload: %s %s %s from %s (status: %s)", obj.dtime, obj.operation, obj.key, obj.remote_ip, obj.http_status)
         return UPLOAD
     elif obj.operation in DEL_OBJECTS:
-        logging.warning("del: %s %s %s",obj.time,obj.operation,obj.key)
+        logging.warning("del: %s %s %s",obj.dtime,obj.operation,obj.key)
         return DELETED
     elif obj.operation in MISC_OBJECTS:
         return MISC
     else:
         raise ValueError(f"Unknown operation {obj.operation} in {obj}")
 
-def s3_logfile_ingest(auth, f):
+def logfile_ingest(auth, f, factory):
+    """Given a logfile, ingest it into the database.
+    :param auth: database authentication token
+    :param f: input file
+    :param factory: function that parses a logfile recorded to a weblog object
+    """
     sums = defaultdict(int)
     for (ct,line) in enumerate(f):
         line = line.strip()
@@ -308,14 +324,14 @@ def s3_logfile_ingest(auth, f):
             continue
         if ct%1000==0:
             logging.info("%s processed...",ct)
-        obj = weblog.weblog.S3Log(line)
+        obj  = factory(line)
         what = obj_ingest(auth, obj)
         sums[what] += 1
     print("Ingest Status:")
     for (k,v) in sums.items():
         print(k,v)
 
-def s3_log_ingest(auth, key):
+def s3_log_ingest(s3_logfile, auth, key):
     """Given an s3 key, ingest each of its records, and them to the databse, and then delete it.
     :param auth: authentication token to write to the database
     :param key: key of the logfile
@@ -343,6 +359,7 @@ def s3_logs_download(auth, threads=1, limit=sys.maxsize):
     q  = queue.Queue()           # forward channel
     bc = queue.Queue()          # backchannel
 
+    s3_logfile = open(S3_LOGFILE_PATH,"a")
     def worker():
         """Runs in the worker thread"""
         nonlocal count
@@ -350,7 +367,7 @@ def s3_logs_download(auth, threads=1, limit=sys.maxsize):
         while True:
             key = q.get()
             try:
-                s3_log_ingest(auth2, key)
+                s3_log_ingest(s3_logfile, auth2, key)
                 count += 1
             except ValueError as e:
                 logging.error("%s",e)
@@ -432,6 +449,60 @@ def db_copy( auth ):
     print("total:",count)
 
 
+def db_gc( auth, s3prefix ):
+    db = dbfile.DBMySQL( auth )
+    c = db.cursor()
+    c.execute("SELECT s3key, id FROM downloadable")
+    s3keys_in_db = {row[0]:row[1] for row in c.fetchall() }
+    print("keys in database:",len(s3keys_in_db))
+
+    # Now get the list of objects in S3
+    p = urllib.parse.urlparse(s3prefix)
+    s3client  = boto3.client('s3', config=Config(signature_version=UNSIGNED))
+    paginator = s3client.get_paginator('list_objects_v2')
+    pages = paginator.paginate(Bucket=p.netloc, Prefix=p.path[1:])
+    count = 0
+    for page in pages:
+        for obj in page.get('Contents'):
+            s3key = obj['Key']
+            if s3key not in s3keys_in_db:
+                print("missing:",s3key)
+            else:
+                del s3keys_in_db[s3key]
+            count += 1
+    print("Objects in s3:",count)
+    print("Objects no longer in S3:",len(s3keys_in_db))
+
+    # Now, find all of downloadable IDs in the database that are also in the downloads table
+    not_present = ",".join( (str(s) for s in sorted(s3keys_in_db.values()) ) )
+    cmd = f"SELECT DISTINCT did FROM downloads WHERE did IN ({not_present})"
+    c.execute( cmd )
+    ids_that_were_downloaded = set([row[0] for row in c.fetchall()])
+    print("Number of ids that were downloaded:",len(ids_that_were_downloaded))
+    ids_not_downloaded = set(s3keys_in_db.values()).difference(ids_that_were_downloaded)
+    print("Number of ids that were not downloaded:",len(ids_not_downloaded))
+    print("Not downloaded and deletable:")
+
+    s3keys_cant_delete = dict()
+    to_delete = set()
+    for (k,v) in sorted(s3keys_in_db.items()):
+        if v in ids_not_downloaded:
+            logging.info("delete from downloadable id %s path %s",v,k)
+            to_delete.add(v)
+            count += 1
+        else:
+            s3keys_cant_delete[k] = v
+    print("Total not downloaded and deleted:",len(to_delete))
+    cmd = "DELETE FROM downloadable where ID in (" + ",".join( (str(s) for s in sorted(to_delete)) ) + ")"
+    c.execute(cmd)
+
+    print("Downloaded at least once and therefore not deletable:",len(s3keys_cant_delete))
+    print("Setting them present=0")
+    not_present = ",".join( (str(s) for s in sorted(s3keys_cant_delete.values()) ) )
+    cmd = f"UPDATE downloadable SET present=0 WHERE id IN ({not_present})"
+    c.execute(cmd)
+
+    
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Import the Digital Corpora logs.',
@@ -439,16 +510,17 @@ if __name__ == "__main__":
     parser.add_argument("--wipe", help="Wipe database and load a new schema", action='store_true')
     parser.add_argument("--debug", action='store_true')
     parser.add_argument("--verbose", action='store_true')
-    parser.add_argument("--threads", "-j", type=int, default=1)
+    parser.add_argument("--threads", "-j", type=int, default=3)
     g = parser.add_mutually_exclusive_group(required=True)
-    g.add_argument("--apache_logfile", help="Apache combined log file to import (currently not working)")
-    g.add_argument("--hash_s3prefix", help="Hash all of the new objects under a given S3 prefix")
+    g.add_argument("--apache_logfile_ingest", help="Apache combined log file to import (currently not working)")
+    g.add_argument("--hash_s3prefix",         help="Hash all of the new objects under a given S3 prefix")
     g.add_argument("--s3_download_ingest", action='store_true',
                         help='download S3 logs to local directory, combine into local logfile, and ingest')
     g.add_argument("--s3_logfile_ingest",
                         help='ingest an already downloaded s3 logfile')
     g.add_argument("--copy", action='store_true',
                    help='Copy downloads from test to prod that are not present in prod')
+    g.add_argument("--gc", action='store_true', help='Garbage collect the MySQL database')
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--aws", help="Get database password from aws secrets system", action='store_true')
     g.add_argument("--env", help="Get database password from environment variables", action='store_true')
@@ -469,6 +541,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     database = "dcstats_test" if not args.prod else 'dcstats'
+    # Select the authentication approach
     if args.aws:
         s = aws_secrets.get_secret()
         auth = dbfile.DBMySQLAuth(host=s['host'],
@@ -488,6 +561,7 @@ if __name__ == "__main__":
     if auth.debug:
         print("auth:", auth)
 
+    # We won't want to do this ever
     if args.wipe:
         # pylint: disable=W0101
         raise RuntimeError("--wipe is disabled")
@@ -498,16 +572,21 @@ if __name__ == "__main__":
         db = dbfile.DBMySQL(auth)
         db.create_schema(open("schema.sql", "r").read())
 
+    # Don't allow another copy to run the script
     ctools.lock.lock_script()
-    if args.apache_logfile:
-        import_apache_logfile(auth, args.apache_logfile)
+
+    # Do what we are supposed to do
+    if args.apache_logfile_ingest:
+        logfile_ingest(auth, open(args.apache_logfile_ingest), weblog.weblog.Weblog)
     elif args.hash_s3prefix:
         hash_s3prefix(auth, args.hash_s3prefix, threads=args.threads)
     elif args.s3_download_ingest:
         s3_logs_download(auth, args.threads, args.limit)
     elif args.s3_logfile_ingest:
-        s3_logfile_ingest( auth, open(args.s3_logfile_ingest))
+        logfile_ingest( auth, open(args.s3_logfile_ingest), weblog.weblog.S3Log)
     elif args.copy:
         db_copy( auth )
+    elif args.gc:
+        db_gc( auth, "s3://digitalcorpora/" )
     else:
         raise RuntimeError("Unknown action")

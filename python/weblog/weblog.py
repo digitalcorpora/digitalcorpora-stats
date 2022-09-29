@@ -21,12 +21,19 @@ def safe_int(s):
     except ValueError:
         return None
 
+def clean_date(s):
+    s = s.replace(':', ' ', 1)
+    bracket = s.find(']')
+    if bracket > 0:
+        s = s[0:bracket]
+    return s
+
 class Weblog:
     """Class that parses an Apache Combined Log File format file and returns tuple.
     See https://httpd.apache.org/docs/2.4/logs.html for log file format
     """
-    __slots__  = ['ipaddr', 'ident', 'user', 'dtime', 'request', 'result',
-                  'bytes', 'agent', 'referrer', 'method', 'url']
+    __slots__  = ['remote_ip', 'ident', 'user', 'dtime', 'request', 'result', 'http_status',
+                  'bytes_sent', 'user_agent', 'referrer', 'method', 'url', 'line', 'operation', 'key', 'object_size']
     CLF_REGEX  = r'([(\d\.):]+) ([^ ]+) ([^ ]+) \[(.*)\] "(.*)" (\d+) (\d+|-)( "[^"]*")?( "[^"]*")?'
     CLF_RE     = re.compile(CLF_REGEX)
     WIKIPAGE_PATS = [re.compile(x) for x in [r"index.php\?title=([^ &]*)", "/wiki/([^ &]*)"]]
@@ -37,21 +44,23 @@ class Weblog:
         m = self.CLF_RE.match(line)
         if not m:
             raise ValueError("invalid logfile line: " + line)
-        self.ipaddr    = m.group(1)
+        self.line      = line
+        self.operation = 'WEBSITE.GET.OBJECT'
+        self.remote_ip = m.group(1)
         self.ident     = m.group(2)
         self.user      = m.group(3)
-        self.dtime     = dateutil.parser.parse(m.group(4).replace(':', ' ', 1))
+        self.dtime     = dateutil.parser.parse( clean_date(m.group(4)))
         self.request   = m.group(5)
         self.result    = safe_int(m.group(6))
-        self.bytes     = safe_int(m.group(7))
+        self.bytes_sent     = safe_int(m.group(7))
         try:
             self.referrer  = m.group(8)[2:-1]  # remove the space and quotes
         except (IndexError, TypeError):
             self.referrer  = None
         try:
-            self.agent     = m.group(9)[2:-1]  # remove the quotes
+            self.user_agent     = m.group(9)[2:-1]  # remove the quotes
         except (IndexError, TypeError):
-            self.agent    = None
+            self.user_agent    = None
 
         # Now compute the derrived fields
         request_fields = self.request.split(" ")
@@ -60,6 +69,12 @@ class Weblog:
             self.url    = request_fields[1]
         except IndexError:
             self.url    = None
+
+        # S3 compatiability
+        self.http_status = self.result
+        self.key       = self.path
+        self.object_size = self.bytes_sent
+
 
     def wikipage(self):
         """Returns the wikipage referenced, or None"""
@@ -86,7 +101,7 @@ class S3Log:
     From https://docs.aws.amazon.com/AmazonS3/latest/userguide/LogFormat.html
     We don't decode the all the fields.
     """
-    __slots__ = ['bucket_owner','bucket', 'time', 'remote_ip', 'requester', 'request_id',
+    __slots__ = ['bucket_owner','bucket', 'dtime', 'remote_ip', 'requester', 'request_id',
                  'operation', 'key', 'request_uri', 'http_status', 'error_code', 'bytes_sent', 'object_size',
                  'total_time', 'turn_around_time', 'referer', 'user_agent', 'version_id',
                  'host_id', 'signature_version',
@@ -133,7 +148,7 @@ class S3Log:
             self.line         = line
             self.bucket_owner = parts[0][2]
             self.bucket       = parts[1][2]
-            self.time         = dateutil.parser.parse(parts[2][1].replace(":"," ",1))
+            self.dtime         = dateutil.parser.parse(parts[2][1].replace(":"," ",1))
             self.remote_ip    = parts[3][2]
             self.requester    = parts[4][2]
             self.request_id   = parts[5][2]
@@ -148,4 +163,4 @@ class S3Log:
             setattr(self, k, v)
 
     def __repr__(self):
-        return f"<{type(self)} {self.time} {self.remote_ip} {self.key} {self.http_status}>"
+        return f"<{type(self)} {self.dtime} {self.remote_ip} {self.key} {self.http_status}>"
