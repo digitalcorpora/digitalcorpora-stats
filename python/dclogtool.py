@@ -440,15 +440,18 @@ def db_gc( auth, s3prefix ):
     ids_not_downloaded = set(s3keys_in_db.values()).difference(ids_that_were_downloaded)
     print("Number of ids that were not downloaded:",len(ids_not_downloaded))
     print("Not downloaded and deletable:")
-    count = 0
     s3keys_cant_delete = dict()
+    to_delete = set()
     for (k,v) in sorted(s3keys_in_db.items()):
         if v in ids_not_downloaded:
-            print(f"delete from downloadable id {v} path {k}")
+            logging.info("delete from downloadable id %s path %s",v,k)
+            to_delete.add(v)
             count += 1
         else:
             s3keys_cant_delete[k] = v
-    print("Not downloaded and deletable:",count)
+    print("Total not downloaded and deleted:",len(to_delete))
+    cmd = "DELETE FROM downloadable where ID in (" + ",".join( (str(s) for s in sorted(to_delete)) ) + ")"
+    c.execute(cmd)
     print("Downloaded at least once and therefore not deletable:",len(s3keys_cant_delete))
     print("Setting them present=0")
     not_present = ",".join( (str(s) for s in sorted(s3keys_cant_delete.values()) ) )
