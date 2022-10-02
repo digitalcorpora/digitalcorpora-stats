@@ -98,6 +98,34 @@ def import_s3obj(obj):
     logging.info('updated %s.  %d bytes, %6.2f seconds.  (%d bytes/sec)', s3key, bytes_hashed, (t1 -t0), bytes_hashed /(t1 -t0))
     return s3key
 
+def s3_get_objects(prefix='', limit=sys.maxsize):
+    s3client  = boto3.client('s3')
+    paginator = s3client.get_paginator('list_objects_v2')
+    pages = paginator.paginate(Bucket=S3_LOG_BUCKET, Prefix='')
+    count = 0
+    for page in pages:
+        if count > limit:
+            break
+        if 'Contents' not in page:
+            continue
+        for obj in page.get('Contents'):
+            count+=1
+            if count > limit:
+                break
+            yield(obj)
+
+def s3_logs_info(limit=sys.maxsize):
+    earliest = None
+    latest   = None
+    count = 0
+    for obj in s3_get_objects('', limit=limit):
+        count += 1
+        earliest = obj['LastModified'] if earliest is None else min(earliest,obj['LastModified'])
+        latest   = obj['LastModified'] if latest is None else max(earliest,obj['LastModified'])
+    print("Count:",count)
+    print("Earliest:",earliest)
+    print("Latest:",latest)
+
 def hash_s3prefix(auth, s3prefix, threads=40):
     """Because we can enumerate all of digitalcorpora in 3 seconds, we do that here. We then request hashing using python's multiprocessing module"""
     p = urllib.parse.urlparse(s3prefix)
@@ -323,7 +351,8 @@ def s3_logs_download(auth, threads=1, limit=sys.maxsize):
 
     def worker():
         nonlocal count
-        auth2 = copy.deepcopy(auth) # thread local auth
+        # deepcopy assures that each thread has its own copy of the auth object.
+        auth2 = copy.deepcopy(auth)
         while True:
             key = q.get()
             try:
@@ -333,7 +362,6 @@ def s3_logs_download(auth, threads=1, limit=sys.maxsize):
                 logging.error("%s",e)
                 bc.put('DIE')
             q.task_done()
-
 
     def handler(signum, _frame):
         if signum==signal.SIGINT:
@@ -349,11 +377,6 @@ def s3_logs_download(auth, threads=1, limit=sys.maxsize):
     for page in pages:
         if count > limit:
             break
-        if 'Contents' not in page:
-            continue
-        for obj in page.get('Contents'):
-            if count > 0:
-                break
         if 'Contents' not in page:
             continue
         for obj in page.get('Contents'):
@@ -406,18 +429,25 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action='store_true')
     parser.add_argument("--verbose", action='store_true')
     parser.add_argument("--threads", "-j", type=int, default=1)
+
+    # One of these options must be provided - tell me what to do
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--apache_logfile_ingest", help="Apache combined log file to import (currently not working)")
     g.add_argument("--hash_s3prefix",         help="Hash all of the new objects under a given S3 prefix")
+    g.add_argument("--s3_logs_info", action='store_true',
+                   help="Report information about the s3 logs that haven't been downloaded")
     g.add_argument("--s3_download_ingest", action='store_true',
                         help='download S3 logs to local directory, combine into local logfile, and ingest')
-    g.add_argument("--s3_logfile_ingest",
-                        help='ingest an already downloaded s3 logfile')
+    g.add_argument("--s3_logfile_ingest",  help='ingest an already downloaded s3 logfile')
     g.add_argument("--copy", action='store_true',
                    help='Copy downloads from test to prod that are not present in prod')
+
+    # Tell me how to authenticate ---
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--aws", help="Get database password from aws secrets system", action='store_true')
     g.add_argument("--env", help="Get database password from environment variables", action='store_true')
+
+    # Tell me which database to use
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--prod", help="Use production database", action='store_true')
     g.add_argument("--test", help="Use test database", action='store_true')
@@ -473,6 +503,8 @@ if __name__ == "__main__":
         s3_logs_download(auth, args.threads, args.limit)
     elif args.s3_logfile_ingest:
         logfile_ingest( auth, open(args.s3_logfile_ingest), weblog.weblog.S3Log)
+    elif args.s3_logs_info:
+        s3_logs_info(args.limit)
     elif args.copy:
         db_copy( auth )
     else:
