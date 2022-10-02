@@ -46,7 +46,7 @@ class Weblog:
             raise ValueError("invalid logfile line: " + line)
         self.line      = line
         self.operation = 'WEBSITE.GET.OBJECT'
-        self.remote_ip    = m.group(1)
+        self.remote_ip = m.group(1)
         self.ident     = m.group(2)
         self.user      = m.group(3)
         self.dtime     = dateutil.parser.parse( clean_date(m.group(4)))

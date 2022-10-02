@@ -1,6 +1,9 @@
 pylint:
 	(cd python; make pylint)
 
+check:
+	make pytest
+
 install-dependencies:
 	python3 -m pip install --user --upgrade pip
 	if [ -r requirements.txt ]; then pip3 install --user -r requirements.txt ; else echo no requirements.txt ; fi
@@ -17,3 +20,6 @@ coverage:
 
 pytest:
 	(cd python; make pytest)
+
+check:
+	make pytest
