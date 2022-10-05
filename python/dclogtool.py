@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-digitalcorpora log, hashing, and maintenance tool. 
+digitalcorpora log, hashing, and maintenance tool.
 Performs any activity requiring write access to the database.
 
 
@@ -14,11 +14,11 @@ import logging
 import multiprocessing
 import os
 import queue
-import signal
 import sys
 import threading
 import time
 import urllib.parse
+import gzip
 from collections import defaultdict
 
 import boto3
@@ -39,8 +39,92 @@ import ctools.lock
 
 year = datetime.datetime.now().year
 
+S3_DATA_BUCKET = 'digitalcorpora'
 S3_LOG_BUCKET = 'digitalcorpora-logs'
+
+# The logfile for this year
 S3_LOGFILE_PATH = os.path.join( os.getenv("HOME"), "s3logs", f"s3logs.{year}.log")
+DEFAULT_TIMEOUT = 30
+WRITE_OBJECTS = set([ 'REST.PUT.PART',
+                      'REST.PUT.OBJECT',
+                      'REST.POST.OBJECT',
+                      'REST.POST.UPLOAD',
+                      'REST.POST.UPLOADS',
+                     ])
+
+DEL_OBJECTS = set(['REST.DELETE.OBJECT',
+                   'REST.DELETE.UPLOAD',
+                   'S3.EXPIRE.OBJECT',
+                   ])
+
+
+GET_OBJECTS = set([ 'REST.GET.OBJECT',
+                    'REST.COPY.PART_GET',
+                    'WEBSITE.GET.OBJECT' ])
+
+MISC_OBJECTS = set([
+    'REST.COPY.OBJECT',
+    'REST.COPY.OBJECT_GET',
+    'REST.GET.ACCELERATE',
+    'REST.GET.ACL',
+    'REST.GET.ANALYTICS',
+    'REST.GET.BUCKET',
+    'REST.GET.BUCKETPOLICY',
+    'REST.GET.BUCKETVERSIONS',
+    'REST.GET.CORS',
+    'REST.GET.ENCRYPTION',
+    'REST.GET.INTELLIGENT_TIERING',
+    'REST.GET.INVENTORY',
+    'REST.GET.LIFECYCLE',
+    'REST.GET.LOCATION',
+    'REST.GET.LOGGING_STATUS',
+    'REST.GET.NOTIFICATION',
+    'REST.GET.OBJECT_LOCK_CONFIGURATION',
+    'REST.GET.OBJECT_TAGGING',
+    'REST.GET.OWNERSHIP_CONTROLS',
+    'REST.GET.POLICY_STATUS',
+    'REST.GET.PUBLIC_ACCESS_BLOCK',
+    'REST.GET.REPLICATION',
+    'REST.GET.REQUEST_PAYMENT',
+    'REST.GET.TAGGING',
+    'REST.GET.UPLOAD',
+    'REST.GET.UPLOADS',
+    'REST.GET.VERSIONING',
+    'REST.GET.WEBSITE',
+    'REST.HEAD.BUCKET',
+    'REST.HEAD.OBJECT',
+    'REST.OPTIONS.PREFLIGHT',
+    'REST.POST.BUCKET',
+    'REST.PUT.BUCKETPOLICY',
+    'REST.PUT.LOGGING_STATUS',
+    'REST.PUT.METRICS',
+    'REST.PUT.NOTIFICATION',
+    'REST.PUT.VERSIONING',
+    'REST.PUT.WEBSITE',
+    'S3.TRANSITION_INT.OBJECT',
+    'WEBSITE.HEAD.OBJECT',
+    'WEBSITE.INVALIDOPERATION',
+])
+
+DOWNLOAD = 'DOWNLOAD'
+UPLOAD   = 'UPLOAD'
+BAD      = 'BAD'
+DELETED  = 'DELETED'
+MISC     = 'MISC'
+BLOCKED  = 'BLOCKED'
+UNKNOWN  = 'UNKNOWN'
+
+def import_apache_logfile(auth, logfile):
+    # see if the schema is present. If not, send it with the wipe command
+    db = dbfile.DBMySQL(auth)
+    cursor = db.cursor()
+    cursor.execute("SELECT count(*) from downloads")
+    with open(logfile) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                obj = weblog.weblog.Weblog(line)
+                weblog.schema.send_weblog(cursor, obj)
 
 BUFSIZE=65536
 def import_s3obj(obj):
@@ -102,6 +186,36 @@ def import_s3obj(obj):
     logging.info('updated %s.  %d bytes, %6.2f seconds.  (%d bytes/sec)', s3key, bytes_hashed, (t1 -t0), bytes_hashed /(t1 -t0))
     return s3key
 
+def s3_get_objects(prefix='', limit=sys.maxsize):
+    s3client  = boto3.client('s3')
+    paginator = s3client.get_paginator('list_objects_v2')
+    pages = paginator.paginate(Bucket=S3_LOG_BUCKET, Prefix='')
+    count = 0
+    for page in pages:
+        if limit > 0:
+            logging.debug("count=%d limit=%d",count,limit)
+        if count > limit:
+            break
+        if 'Contents' not in page:
+            continue
+        for obj in page.get('Contents'):
+            count+=1
+            if count > limit:
+                break
+            yield(obj)
+
+def s3_logs_info(limit=sys.maxsize):
+    earliest = None
+    latest   = None
+    count = 0
+    for obj in s3_get_objects('', limit=limit):
+        count += 1
+        earliest = obj['LastModified'] if earliest is None else min(earliest,obj['LastModified'])
+        latest   = obj['LastModified'] if latest is None else max(earliest,obj['LastModified'])
+    print("Count:",count)
+    print("Earliest:",earliest)
+    print("Latest:",latest)
+
 def hash_s3prefix(auth, s3prefix, threads=40):
     """Because we can enumerate all of digitalcorpora in 3 seconds, we do that here. We then request hashing using python's multiprocessing module"""
     p = urllib.parse.urlparse(s3prefix)
@@ -162,22 +276,33 @@ def hash_s3prefix(auth, s3prefix, threads=40):
         with multiprocessing.Pool(threads) as p:
             p.map(import_s3obj, objs)
 
-def add_download(auth, obj):
+seen_dates = set()
+
+ingested_s3key = set()
+ingested_user_agent = set()
+def insert_obj_into_db(auth, obj):
     """ First make sure that it's in downloads and get its ID.
     Note that the downloads are tracked by key, even though the object identified by the key may change.
+    This is not very efficient, as it requires (on average) two aborted inserts due to duplicate keys and then an insert with two subselects per object.
+    The aborted inserts get accelerated by the MySQL database because the files are indexed, but we can make this faster by only performing each insert once and tracking it in a set.
+    We can't get away from the subselects due to threading issues.
     """
-    logging.info("obj: %s",obj)
-    dbfile.DBMySQL.csfr(auth,
-                        """INSERT INTO downloadable (s3key, bytes) VALUES (%s,%s) """,
-                        (obj.key, obj.object_size), ignore=[1062])
+    if (obj.key,obj.object_size) not in ingested_s3key:
+        dbfile.DBMySQL.csfr(auth,
+                            """INSERT INTO downloadable (s3key, bytes) VALUES (%s,%s) """,
+                            (obj.key, obj.object_size), ignore=[1062])
+        ingested_s3key.add((obj.key, obj.object_size))
+
     # Make sure the browser is in the databse
+    if obj.user_agent not in ingested_user_agent:
+        dbfile.DBMySQL.csfr(auth,
+                            """INSERT INTO user_agents (user_agent) VALUES (%s) """,
+                            (obj.user_agent,), ignore=[1062])
+        ingested_user_agent.add(obj.user_agent)
+
+
+    # Now INSERT the file into the table
     dbfile.DBMySQL.csfr(auth,
-                        """INSERT INTO user_agents (user_agent) VALUES (%s) """,
-                        (obj.user_agent,), ignore=[1062])
-
-
-    # Now add the download
-    r = dbfile.DBMySQL.csfr(auth,
                         """
                         INSERT INTO downloads (did, user_agent_id, remote_ipaddr, dtime, bytes_sent)
                         VALUES ((select id from downloadable where s3key=%s),
@@ -185,95 +310,45 @@ def add_download(auth, obj):
                                %s,%s,%s)
                         """,
                         (obj.key, obj.user_agent, obj.remote_ip, obj.dtime, obj.bytes_sent))
-    logging.info("object added r=%s key=%s remote_ip=%s time=%s",r,obj.key,obj.remote_ip,obj.dtime)
 
-
-seen_dates = set()
-WRITE_OBJECTS = set([ 'REST.PUT.PART',
-                      'REST.PUT.OBJECT',
-                      'REST.POST.OBJECT',
-                      'REST.POST.UPLOAD',
-                      'REST.POST.UPLOADS',
-                     ])
-
-DEL_OBJECTS = set(['REST.DELETE.OBJECT',
-                   'REST.DELETE.UPLOAD',
-                   'S3.EXPIRE.OBJECT',
-                   ])
-
-
-GET_OBJECTS = set([ 'REST.GET.OBJECT',
-                    'WEBSITE.GET.OBJECT' ])
-
-MISC_OBJECTS = set([ 'REST.GET.ACCELERATE',
-                     'REST.GET.ACL',
-                     'REST.GET.BUCKET',
-                     'REST.COPY.OBJECT',
-                     'REST.COPY.OBJECT_GET',
-                     'REST.GET.BUCKETPOLICY',
-                     'REST.GET.BUCKETVERSIONS',
-                     'REST.GET.CORS',
-                     'REST.GET.ENCRYPTION',
-                     'REST.GET.INTELLIGENT_TIERING',
-                     'REST.GET.INVENTORY',
-                     'REST.GET.LIFECYCLE',
-                     'REST.GET.LOCATION',
-                     'REST.GET.LOGGING_STATUS',
-                     'REST.GET.NOTIFICATION',
-                     'REST.GET.OBJECT_LOCK_CONFIGURATION',
-                     'REST.GET.OBJECT_TAGGING',
-                     'REST.GET.OWNERSHIP_CONTROLS',
-                     'REST.GET.POLICY_STATUS',
-                     'REST.GET.PUBLIC_ACCESS_BLOCK',
-                     'REST.GET.REPLICATION',
-                     'REST.GET.REQUEST_PAYMENT',
-                     'REST.GET.TAGGING',
-                     'REST.GET.VERSIONING',
-                     'REST.GET.WEBSITE',
-                     'REST.GET.ANALYTICS',
-                     'S3.TRANSITION_INT.OBJECT',
-                     'REST.HEAD.OBJECT',
-                     'WEBSITE.HEAD.OBJECT',
-                     'REST.HEAD.BUCKET',
-                     'REST.PUT.BUCKETPOLICY',
-                     'REST.PUT.LOGGING_STATUS',
-                     'REST.PUT.METRICS',
-                     'REST.PUT.NOTIFICATION',
-                     'REST.PUT.VERSIONING',
-                     'REST.PUT.WEBSITE',
-                     'REST.OPTIONS.PREFLIGHT' ])
-
-DOWNLOAD = 'DOWNLOAD'
-UPLOAD   = 'UPLOAD'
-BAD      = 'BAD'
-DELETED  = 'DELETED'
-MISC     = 'MISC'
-BLOCKED  = 'BLOCKED'
 
 # pylint: disable=R0911
-def obj_ingest(auth, obj):
+def validate_obj(auth, obj):
+    """Write a logfile object to the database"""
     if obj.dtime.date() not in seen_dates:
-        logging.info("%s",obj.dtime.date())
+        # Status report
+        logging.info("Ingesting date=%s",obj.dtime.date())
         seen_dates.add(obj.dtime.date())
     if obj.operation in GET_OBJECTS:
         if obj.http_status in [200,206]:
-            add_download(auth, obj)
             return DOWNLOAD
         elif obj.http_status in [400,404]:
             # bad URL
             return BAD
+        elif obj.http_status in [416]:
+            # Bad Range
+            return BAD
         elif obj.http_status in [304]:
             # not modified
             return BAD
+        elif obj.http_status in [301]:
+            # moved permanently?
+            return BAD
+        elif obj.http_status in [304]:
+            # not modified
+            return BAD
+        elif obj.http_status in [500]:
+            # internal error
+            return BAD
         else:
             # Log that we didn't ingest something, but throw it away
-            logging.warning("will not ingest: %s",obj.line)
+            logging.warning("will not ingest HTTP status %d: %s",obj.http_status, obj.line)
             return BAD
     elif obj.operation in WRITE_OBJECTS:
-        if obj.http_status in [405]:
+        if obj.http_status//100 in [4]:
             # Write objects blocked.
             return BLOCKED
-        logging.warning("upload: %s %s %s",obj.dtime,obj.operation,obj.key)
+        logging.warning("upload: %s %s %s from %s (status: %s)", obj.dtime, obj.operation, obj.key, obj.remote_ip, obj.http_status)
         return UPLOAD
     elif obj.operation in DEL_OBJECTS:
         logging.warning("del: %s %s %s",obj.dtime,obj.operation,obj.key)
@@ -281,73 +356,99 @@ def obj_ingest(auth, obj):
     elif obj.operation in MISC_OBJECTS:
         return MISC
     else:
-        raise ValueError(f"Unknown operation {obj.operation} in {obj}")
+        logging.error(f"Unknown operation {obj.operation} in {obj}")
+        return UNKNOWN
 
 def logfile_ingest(auth, f, factory):
     """Given a logfile, ingest it into the database.
     :param auth: database authentication token
     :param f: input file
     :param factory: function that parses a logfile recorded to a weblog object
+    Because of the `factory` parameter, we can ingest either.
     """
     sums = defaultdict(int)
+    earliest = None
+    latest   = None
     for (ct,line) in enumerate(f):
         line = line.strip()
         if line=='':
             continue
-        if ct%1000==0:
-            logging.info("%s processed...",ct)
         obj  = factory(line)
-        what = obj_ingest(auth, obj)
+        what = validate_obj(auth, obj)
+        if what==DOWNLOAD:
+            insert_obj_into_db(auth, obj)
         sums[what] += 1
+        earliest = obj.dtime if earliest is None else min(earliest,obj.dtime)
+        latest = obj.dtime if latest is None else max(latest,obj.dtime)
+        if (ct>0) and (ct % 10000)==0:
+            logging.info("%s processed (last batch: %s to %s)...",ct,earliest,latest)
+            earliest = None
+            latest = None
     print("Ingest Status:")
     for (k,v) in sums.items():
         print(k,v)
 
-def s3_log_ingest(s3_logfile, auth, key):
-    """Given an s3 key, ingest each of its records, and them to the databse, and then delete it.
+def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, key):
+    """Given an s3 key, ingest each of its records (there can be many), and them to the databse, and then delete it.
     :param auth: authentication token to write to the database
     :param key: key of the logfile
     """
-    logging.info("%s",key)
-    s3client  = boto3.client('s3')
+    config = Config(connect_timeout=5, retries={'max_attempts': 4})
+    count = 0
+    s3client  = boto3.client('s3', config=config)
     o2   = s3client.get_object(Bucket=S3_LOG_BUCKET, Key=key)
     line_stream = codecs.getreader("utf-8")
     for line in line_stream(o2['Body']):
         obj = weblog.weblog.S3Log(line)
-        obj_ingest(auth, obj)
-        s3_logfile.write(line)
-    s3client.delete_object(Bucket=S3_LOG_BUCKET, Key=key)
+        what = validate_obj(auth, obj)
+        if what==DOWNLOAD:
+            insert_obj_into_db(auth, obj)
+            s3_logfile_lock.acquire()
+            s3_logfile.write(line)
+            s3_logfile_lock.release()
+            count += 1
+
+    # It turns out that deleting objects can take a really long time, so do it in another thread
+    def delete_object_worker(key=key):
+        s3client2  = boto3.client('s3')
+        s3client2.delete_object(Bucket=S3_LOG_BUCKET, Key=key)
+    threading.Thread(target=delete_object_worker, kwargs={"key":key}).start()
+    s3_logfile_lock.acquire()
     s3_logfile.flush()
+    s3_logfile_lock.release()
+    return count
 
 
-def s3_logs_download(auth, threads=1, limit=sys.maxsize):
+DIE_PARENT = "<<DIE PARENT>>"
+DIE_THREAD = "<<DIE THREAD>>"     # hopefully no S3Key with this
+def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize, timeout=DEFAULT_TIMEOUT):
     """Download an S3 logs and ingest them.
+    Runs in the main thread.
     :param auth: authentication token to write to the database.
     :param threads: number of threads to use
     """
     count = 0
-    q  = queue.Queue()           # forward channel
+    q  = queue.Queue(maxsize = threads*2)          # forward channel
     bc = queue.Queue()          # backchannel
 
-    s3_logfile = open(S3_LOGFILE_PATH,"a")
+    s3_logfile      = open(S3_LOGFILE_PATH,"a")
+    s3_logfile_lock = threading.Lock()
     def worker():
+        """Runs in the worker thread"""
         nonlocal count
-        auth2 = copy.deepcopy(auth) # thread local auth
+        # deepcopy assures that each thread has its own copy of the auth object.
+        auth2 = copy.deepcopy(auth)
         while True:
+            logging.debug("%d - Calling get...",threading.get_ident())
             key = q.get()
-            try:
-                s3_log_ingest(s3_logfile,auth2, key)
-                count += 1
-            except ValueError as e:
-                logging.error("%s",e)
-                bc.put('DIE')
+            logging.debug("%d - got %s",threading.get_ident(),key)
+            if key==DIE_THREAD:
+                q.task_done()
+                return
+            tally = s3_log_ingest(s3_logfile, s3_logfile_lock, auth2, key)
+            count += tally
             q.task_done()
-
-
-    def handler(signum, _frame):
-        if signum==signal.SIGINT:
-            bc.put('DIE')
-    signal.signal(signal.SIGINT, handler)
+            time.sleep(0)
 
     # Start the threads
     for _ in range(threads):
@@ -357,28 +458,36 @@ def s3_logs_download(auth, threads=1, limit=sys.maxsize):
     pages = paginator.paginate(Bucket=S3_LOG_BUCKET, Prefix='')
     for page in pages:
         if count > limit:
+            logging.debug("count=%d exceeds limit (%d)",count,limit)
             break
         if 'Contents' not in page:
             continue
-        for obj in page.get('Contents'):
-            if count > 0:
+
+        objs = page.get('Contents')
+        for (ct,obj) in enumerate(objs,1):
+            if count>limit:
                 break
-        if 'Contents' not in page:
-            continue
-        for obj in page.get('Contents'):
-            q.put(obj['Key'])
+            q.put(obj['Key'],timeout=timeout)  # if we have blocked more than 30 seconds, something is wrong
+
+            # Any news from the backchannel?
+            # This allows exceptions in the worker thread to propigate to the parent.
             try:
                 back = bc.get(block=False)
             except queue.Empty:
                 pass
             else:
                 logging.info("Data received on backchannel: %s",back)
-                if back=='DIE':
-                    raise RuntimeError("time to die")
+                if back==DIE_PARENT:
+                    raise RuntimeError("Received DIE_PARENT")
+            time.sleep(0)
 
     # Block until all tasks are done
-    # Don't bother killing the workers.
+    # Don't bother killing the workers (why not?)
+    logging.debug("done looping over pages")
+    for _ in range(threads):
+        q.put(DIE_THREAD)
     q.join()
+
 
 def db_copy( auth ):
     """Copy the downloads from the dev database to the production database.
@@ -387,7 +496,12 @@ def db_copy( auth ):
     """
     db = dbfile.DBMySQL(auth)
     c = db.cursor()
-    c.execute("SELECT b.s3key,b.bytes, a.remote_ipaddr,a.dtime FROM dcstats_test.downloads a RIGHT JOIN downloadable b ON a.did=b.id where (a.remote_ipaddr is not null) and (a.dtime is not null) ")
+    c.execute(
+        """
+        SELECT b.s3key,b.bytes, a.remote_ipaddr,a.dtime
+        FROM dcstats_test.downloads a
+        RIGHT JOIN downloadable b ON a.did=b.id where (a.remote_ipaddr is not null) and (a.dtime is not null)
+        """)
     count = 0
     for (s3key,object_size,remote_ip,dtime) in c.fetchall():
         count += 1
@@ -402,10 +516,26 @@ def db_copy( auth ):
                                              'object_size': object_size,
                                              'remote_ip':remote_ip,
                                              'time':dtime})
-            add_download( auth, obj)
+            insert_obj_into_db( auth, obj)
             print("Added",s3key,remote_ip,dtime)
     print("total:",count)
 
+def db_stats( auth ):
+    db = dbfile.DBMySQL(auth)
+    def show_query(message, query):
+        c = db.cursor()
+        c.execute(query)
+        print(message % c.fetchall()[0])
+
+    print("Stats on the database:")
+    show_query("Downloadable objects in database: %s","select count(*) from downloadable")
+    show_query("Downloads objects in database: %s from %s to %s ","select count(*), min(dtime), max(dtime) from downloads")
+
+def logfile_opener(fname):
+    if fname.endswith(".gz"):
+        return gzip.open(fname,"rt", encoding='utf-8' )
+    else:
+        return open(fname, "rt")
 
 def db_gc( auth, s3prefix ):
     db = dbfile.DBMySQL( auth )
@@ -460,7 +590,7 @@ def db_gc( auth, s3prefix ):
     cmd = f"UPDATE downloadable SET present=0 WHERE id IN ({not_present})"
     c.execute(cmd)
 
-    
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Import the Digital Corpora logs.',
@@ -468,24 +598,32 @@ if __name__ == "__main__":
     parser.add_argument("--wipe", help="Wipe database and load a new schema", action='store_true')
     parser.add_argument("--debug", action='store_true')
     parser.add_argument("--verbose", action='store_true')
-    parser.add_argument("--threads", "-j", type=int, default=3)
+    parser.add_argument("--threads", "-j", type=int, default=1)
+    parser.add_argument("--limit", type=int, default=sys.maxsize, help="Limit number of imports to this number when reading from text files or s3 objects when reading from s3")
+
+    # One of these options must be provided - tell me what to do
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--apache_logfile_ingest", help="Apache combined log file to import (currently not working)")
     g.add_argument("--hash_s3prefix",         help="Hash all of the new objects under a given S3 prefix")
-    g.add_argument("--s3_download_ingest", action='store_true',
+    g.add_argument("--s3_logs_info", action='store_true',
+                   help="Report information about the s3 logs that haven't been downloaded")
+    g.add_argument("--s3_logs_download_ingest_and_save", action='store_true',
                         help='download S3 logs to local directory, combine into local logfile, and ingest')
-    g.add_argument("--s3_logfile_ingest",
-                        help='ingest an already downloaded s3 logfile')
+    g.add_argument("--s3_logfile_ingest",  help='ingest an already downloaded s3 logfile')
+    g.add_argument("--db_stats", help='provide information on database',action='store_true')
     g.add_argument("--copy", action='store_true',
                    help='Copy downloads from test to prod that are not present in prod')
     g.add_argument("--gc", action='store_true', help='Garbage collect the MySQL database')
+
+    # Tell me how to authenticate ---
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--aws", help="Get database password from aws secrets system", action='store_true')
     g.add_argument("--env", help="Get database password from environment variables", action='store_true')
+
+    # Tell me which database to use
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--prod", help="Use production database", action='store_true')
     g.add_argument("--test", help="Use test database", action='store_true')
-    parser.add_argument("--limit", type=int, default=sys.maxsize, help="Limit number of imports to this number")
 
     clogging.add_argument(parser)
     args = parser.parse_args()
@@ -535,16 +673,22 @@ if __name__ == "__main__":
 
     # Do what we are supposed to do
     if args.apache_logfile_ingest:
-        logfile_ingest(auth, open(args.apache_logfile_ingest), weblog.weblog.Weblog)
+        with logfile_opener(args.apache_logfile_ingest) as f:
+            logfile_ingest(auth, f, weblog.weblog.Weblog)
+    elif args.s3_logfile_ingest:
+        with logfile_opener(args.s3_logfile_ingest) as f:
+            logfile_ingest( auth, f, weblog.weblog.S3Log)
     elif args.hash_s3prefix:
         hash_s3prefix(auth, args.hash_s3prefix, threads=args.threads)
-    elif args.s3_download_ingest:
-        s3_logs_download(auth, args.threads, args.limit)
-    elif args.s3_logfile_ingest:
-        logfile_ingest( auth, open(args.s3_logfile_ingest), weblog.weblog.S3Log)
+    elif args.s3_logs_download_ingest_and_save:
+        s3_logs_download_ingest_and_save(auth, args.threads, args.limit)
+    elif args.s3_logs_info:
+        s3_logs_info(args.limit)
     elif args.copy:
         db_copy( auth )
     elif args.gc:
-        db_gc( auth, "s3://digitalcorpora/" )
+        db_gc( auth, "s3://" + D3_DATA_BUCKET)
+    elif args.db_stats:
+        db_stats( auth )
     else:
         raise RuntimeError("Unknown action")

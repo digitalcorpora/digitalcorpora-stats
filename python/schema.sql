@@ -1,6 +1,6 @@
--- MySQL dump 10.14  Distrib 5.5.68-MariaDB, for Linux (x86_64)
+-- MySQL dump 10.13  Distrib 5.7.39, for Linux (x86_64)
 --
--- Host: mysql.simson.net    Database: dcstats
+-- Host: mysql.digitalcorpora.org    Database: dcstats
 -- ------------------------------------------------------
 -- Server version	8.0.28-0ubuntu0.20.04.3
 
@@ -32,6 +32,7 @@ CREATE TABLE `downloadable` (
   `etag` varchar(64) DEFAULT NULL,
   `sha2_256` varchar(64) DEFAULT NULL,
   `sha3_256` varchar(64) DEFAULT NULL,
+  `present` tinyint(1) DEFAULT '1',
   PRIMARY KEY (`id`),
   UNIQUE KEY `s3key` (`s3key`),
   KEY `bytes` (`bytes`),
@@ -39,7 +40,7 @@ CREATE TABLE `downloadable` (
   KEY `etag` (`etag`),
   KEY `sha2_256` (`sha2_256`),
   KEY `sha3_256` (`sha3_256`)
-) ENGINE=InnoDB AUTO_INCREMENT=7618239 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=7618242 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -64,7 +65,7 @@ CREATE TABLE `downloads` (
   KEY `user_agent_id` (`user_agent_id`),
   CONSTRAINT `downloads_ibfk_1` FOREIGN KEY (`did`) REFERENCES `downloadable` (`id`),
   CONSTRAINT `downloads_ibfk_2` FOREIGN KEY (`user_agent_id`) REFERENCES `user_agents` (`id`)
-) ENGINE=InnoDB AUTO_INCREMENT=9481656 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=9481657 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -79,7 +80,7 @@ CREATE TABLE `user_agents` (
   `user_agent` varchar(128) DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `user_agent` (`user_agent`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
@@ -91,4 +92,4 @@ CREATE TABLE `user_agents` (
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2022-09-28 19:45:36
+-- Dump completed on 2022-10-01 20:37:23
