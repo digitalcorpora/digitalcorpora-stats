@@ -14,7 +14,6 @@ import logging
 import multiprocessing
 import os
 import queue
-import signal
 import sys
 import threading
 import time
@@ -45,11 +44,75 @@ S3_LOG_BUCKET = 'digitalcorpora-logs'
 
 # The logfile for this year
 S3_LOGFILE_PATH = os.path.join( os.getenv("HOME"), "s3logs", f"s3logs.{year}.log")
+DEFAULT_TIMEOUT = 30
+WRITE_OBJECTS = set([ 'REST.PUT.PART',
+                      'REST.PUT.OBJECT',
+                      'REST.POST.OBJECT',
+                      'REST.POST.UPLOAD',
+                      'REST.POST.UPLOADS',
+                     ])
 
-def sigalrm_handler(num, stack):
-    print("Received SIGALARM [%s]" % num)
-    print(stack)
-    raise Exception("Timeout")
+DEL_OBJECTS = set(['REST.DELETE.OBJECT',
+                   'REST.DELETE.UPLOAD',
+                   'S3.EXPIRE.OBJECT',
+                   ])
+
+
+GET_OBJECTS = set([ 'REST.GET.OBJECT',
+                    'REST.COPY.PART_GET',
+                    'WEBSITE.GET.OBJECT' ])
+
+MISC_OBJECTS = set([
+    'REST.COPY.OBJECT',
+    'REST.COPY.OBJECT_GET',
+    'REST.GET.ACCELERATE',
+    'REST.GET.ACL',
+    'REST.GET.ANALYTICS',
+    'REST.GET.BUCKET',
+    'REST.GET.BUCKETPOLICY',
+    'REST.GET.BUCKETVERSIONS',
+    'REST.GET.CORS',
+    'REST.GET.ENCRYPTION',
+    'REST.GET.INTELLIGENT_TIERING',
+    'REST.GET.INVENTORY',
+    'REST.GET.LIFECYCLE',
+    'REST.GET.LOCATION',
+    'REST.GET.LOGGING_STATUS',
+    'REST.GET.NOTIFICATION',
+    'REST.GET.OBJECT_LOCK_CONFIGURATION',
+    'REST.GET.OBJECT_TAGGING',
+    'REST.GET.OWNERSHIP_CONTROLS',
+    'REST.GET.POLICY_STATUS',
+    'REST.GET.PUBLIC_ACCESS_BLOCK',
+    'REST.GET.REPLICATION',
+    'REST.GET.REQUEST_PAYMENT',
+    'REST.GET.TAGGING',
+    'REST.GET.UPLOAD',
+    'REST.GET.UPLOADS',
+    'REST.GET.VERSIONING',
+    'REST.GET.WEBSITE',
+    'REST.HEAD.BUCKET',
+    'REST.HEAD.OBJECT',
+    'REST.OPTIONS.PREFLIGHT',
+    'REST.POST.BUCKET',
+    'REST.PUT.BUCKETPOLICY',
+    'REST.PUT.LOGGING_STATUS',
+    'REST.PUT.METRICS',
+    'REST.PUT.NOTIFICATION',
+    'REST.PUT.VERSIONING',
+    'REST.PUT.WEBSITE',
+    'S3.TRANSITION_INT.OBJECT',
+    'WEBSITE.HEAD.OBJECT',
+    'WEBSITE.INVALIDOPERATION',
+])
+
+DOWNLOAD = 'DOWNLOAD'
+UPLOAD   = 'UPLOAD'
+BAD      = 'BAD'
+DELETED  = 'DELETED'
+MISC     = 'MISC'
+BLOCKED  = 'BLOCKED'
+UNKNOWN  = 'UNKNOWN'
 
 def import_apache_logfile(auth, logfile):
     # see if the schema is present. If not, send it with the wipe command
@@ -214,73 +277,6 @@ def hash_s3prefix(auth, s3prefix, threads=40):
             p.map(import_s3obj, objs)
 
 seen_dates = set()
-WRITE_OBJECTS = set([ 'REST.PUT.PART',
-                      'REST.PUT.OBJECT',
-                      'REST.POST.OBJECT',
-                      'REST.POST.UPLOAD',
-                      'REST.POST.UPLOADS',
-                     ])
-
-DEL_OBJECTS = set(['REST.DELETE.OBJECT',
-                   'REST.DELETE.UPLOAD',
-                   'S3.EXPIRE.OBJECT',
-                   ])
-
-
-GET_OBJECTS = set([ 'REST.GET.OBJECT',
-                    'WEBSITE.GET.OBJECT' ])
-
-MISC_OBJECTS = set([
-    'REST.COPY.OBJECT',
-    'REST.COPY.OBJECT_GET',
-    'REST.GET.ACCELERATE',
-    'REST.GET.ACL',
-    'REST.GET.ANALYTICS',
-    'REST.GET.BUCKET',
-    'REST.GET.BUCKETPOLICY',
-    'REST.GET.BUCKETVERSIONS',
-    'REST.GET.CORS',
-    'REST.GET.ENCRYPTION',
-    'REST.GET.INTELLIGENT_TIERING',
-    'REST.GET.INVENTORY',
-    'REST.GET.LIFECYCLE',
-    'REST.GET.LOCATION',
-    'REST.GET.LOGGING_STATUS',
-    'REST.GET.NOTIFICATION',
-    'REST.GET.OBJECT_LOCK_CONFIGURATION',
-    'REST.GET.OBJECT_TAGGING',
-    'REST.GET.OWNERSHIP_CONTROLS',
-    'REST.GET.POLICY_STATUS',
-    'REST.GET.PUBLIC_ACCESS_BLOCK',
-    'REST.GET.REPLICATION',
-    'REST.GET.REQUEST_PAYMENT',
-    'REST.GET.TAGGING',
-    'REST.GET.UPLOAD',
-    'REST.GET.UPLOADS',
-    'REST.GET.VERSIONING',
-    'REST.GET.WEBSITE',
-    'REST.HEAD.BUCKET',
-    'REST.HEAD.OBJECT',
-    'REST.OPTIONS.PREFLIGHT',
-    'REST.POST.BUCKET',
-    'REST.PUT.BUCKETPOLICY',
-    'REST.PUT.LOGGING_STATUS',
-    'REST.PUT.METRICS',
-    'REST.PUT.NOTIFICATION',
-    'REST.PUT.VERSIONING',
-    'REST.PUT.WEBSITE',
-    'S3.TRANSITION_INT.OBJECT',
-    'WEBSITE.HEAD.OBJECT',
-    'WEBSITE.INVALIDOPERATION',
-])
-
-DOWNLOAD = 'DOWNLOAD'
-UPLOAD   = 'UPLOAD'
-BAD      = 'BAD'
-DELETED  = 'DELETED'
-MISC     = 'MISC'
-BLOCKED  = 'BLOCKED'
-UNKNOWN  = 'UNKNOWN'
 
 ingested_s3key = set()
 ingested_user_agent = set()
@@ -291,7 +287,6 @@ def insert_obj_into_db(auth, obj):
     The aborted inserts get accelerated by the MySQL database because the files are indexed, but we can make this faster by only performing each insert once and tracking it in a set.
     We can't get away from the subselects due to threading issues.
     """
-    logging.debug("obj: %s",obj)
     if (obj.key,obj.object_size) not in ingested_s3key:
         dbfile.DBMySQL.csfr(auth,
                             """INSERT INTO downloadable (s3key, bytes) VALUES (%s,%s) """,
@@ -342,9 +337,12 @@ def validate_obj(auth, obj):
         elif obj.http_status in [304]:
             # not modified
             return BAD
+        elif obj.http_status in [500]:
+            # internal error
+            return BAD
         else:
             # Log that we didn't ingest something, but throw it away
-            logging.warning("will not ingest: %s",obj.line)
+            logging.warning("will not ingest HTTP status %d: %s",obj.http_status, obj.line)
             return BAD
     elif obj.operation in WRITE_OBJECTS:
         if obj.http_status//100 in [4]:
@@ -395,9 +393,9 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, key):
     :param auth: authentication token to write to the database
     :param key: key of the logfile
     """
+    config = Config(connect_timeout=5, retries={'max_attempts': 4})
     count = 0
-    logging.info("%s",key)
-    s3client  = boto3.client('s3')
+    s3client  = boto3.client('s3', config=config)
     o2   = s3client.get_object(Bucket=S3_LOG_BUCKET, Key=key)
     line_stream = codecs.getreader("utf-8")
     for line in line_stream(o2['Body']):
@@ -409,7 +407,12 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, key):
             s3_logfile.write(line)
             s3_logfile_lock.release()
             count += 1
-    s3client.delete_object(Bucket=S3_LOG_BUCKET, Key=key)
+
+    # It turns out that deleting objects can take a really long time, so do it in another thread
+    def delete_object_worker(key=key):
+        s3client2  = boto3.client('s3')
+        s3client2.delete_object(Bucket=S3_LOG_BUCKET, Key=key)
+    threading.Thread(target=delete_object_worker, kwargs={"key":key}).start()
     s3_logfile_lock.acquire()
     s3_logfile.flush()
     s3_logfile_lock.release()
@@ -418,14 +421,14 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, key):
 
 DIE_PARENT = "<<DIE PARENT>>"
 DIE_THREAD = "<<DIE THREAD>>"     # hopefully no S3Key with this
-def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize):
+def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize, timeout=DEFAULT_TIMEOUT):
     """Download an S3 logs and ingest them.
     Runs in the main thread.
     :param auth: authentication token to write to the database.
     :param threads: number of threads to use
     """
     count = 0
-    q  = queue.Queue()           # forward channel
+    q  = queue.Queue(maxsize = threads*2)          # forward channel
     bc = queue.Queue()          # backchannel
 
     s3_logfile      = open(S3_LOGFILE_PATH,"a")
@@ -436,27 +439,16 @@ def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize):
         # deepcopy assures that each thread has its own copy of the auth object.
         auth2 = copy.deepcopy(auth)
         while True:
-            logging.debug("Calling get...")
+            logging.debug("%d - Calling get...",threading.get_ident())
             key = q.get()
-            logging.debug("got %s",key)
+            logging.debug("%d - got %s",threading.get_ident(),key)
             if key==DIE_THREAD:
-                logging.info("thread terminating")
                 q.task_done()
                 return
-            try:
-                tally = s3_log_ingest(s3_logfile, s3_logfile_lock, auth2, key)
-                count += tally
-                logging.info("Ingested %d item; count=%d; limit=%d",tally,count,limit)
-            except ValueError as e:
-                logging.error("%s",e)
-                bc.put(DIE_PARENT)   # tell parent that we died.
+            tally = s3_log_ingest(s3_logfile, s3_logfile_lock, auth2, key)
+            count += tally
             q.task_done()
-
-    def sigint_handler(signum, _frame):
-        if signum==signal.SIGINT:
-            bc.put(DIE_PARENT)
-    signal.signal(signal.SIGINT,  sigint_handler)
-    signal.signal(signal.SIGALRM, sigalrm_handler)
+            time.sleep(0)
 
     # Start the threads
     for _ in range(threads):
@@ -465,9 +457,6 @@ def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize):
     paginator = s3client.get_paginator('list_objects_v2')
     pages = paginator.paginate(Bucket=S3_LOG_BUCKET, Prefix='')
     for page in pages:
-        # Each time through, extend the alarm by 2 minutes
-        signal.alarm(120)
-        logging.info("parent. count=%d limit=%d",count,limit)
         if count > limit:
             logging.debug("count=%d exceeds limit (%d)",count,limit)
             break
@@ -475,10 +464,10 @@ def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize):
             continue
 
         objs = page.get('Contents')
-        logging.info("read %d objs",objs)
         for (ct,obj) in enumerate(objs,1):
-            logging.info("processing object %d",ct)
-            q.put(obj['Key'])
+            if count>limit:
+                break
+            q.put(obj['Key'],timeout=timeout)  # if we have blocked more than 30 seconds, something is wrong
 
             # Any news from the backchannel?
             # This allows exceptions in the worker thread to propigate to the parent.
@@ -490,17 +479,15 @@ def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize):
                 logging.info("Data received on backchannel: %s",back)
                 if back==DIE_PARENT:
                     raise RuntimeError("Received DIE_PARENT")
+            time.sleep(0)
 
     # Block until all tasks are done
     # Don't bother killing the workers (why not?)
     logging.debug("done looping over pages")
     for _ in range(threads):
-        logging.info("PUTTING DIE_THREAD")
         q.put(DIE_THREAD)
     q.join()
 
-    # Clear the alarm
-    signal.alarm(0)
 
 def db_copy( auth ):
     """Copy the downloads from the dev database to the production database.
