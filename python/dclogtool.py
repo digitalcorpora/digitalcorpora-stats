@@ -114,17 +114,36 @@ MISC     = 'MISC'
 BLOCKED  = 'BLOCKED'
 UNKNOWN  = 'UNKNOWN'
 
-def import_apache_logfile(auth, logfile):
-    # see if the schema is present. If not, send it with the wipe command
-    db = dbfile.DBMySQL(auth)
-    cursor = db.cursor()
-    cursor.execute("SELECT count(*) from downloads")
-    with open(logfile) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                obj = weblog.weblog.Weblog(line)
-                weblog.schema.send_weblog(cursor, obj)
+################################################################
+### Low-level routines for working with S3
+################################################################
+
+def s3_get_objects(s3prefix='', limit=sys.maxsize):
+    """Iterator for all s3 objects beginning with a prefix"""
+    s3client  = boto3.client('s3')
+    paginator = s3client.get_paginator('list_objects_v2')
+    pages = paginator.paginate(Bucket=S3_LOG_BUCKET, Prefix=s3prefix)
+    count = 0
+    for page in pages:
+        if limit > 0:
+            logging.debug("count=%d limit=%d",count,limit)
+        if count > limit:
+            break
+        if 'Contents' not in page:
+            continue
+        for obj in page.get('Contents'):
+            count+=1
+            if count > limit:
+                break
+            yield(obj)
+    if count==0:
+        logging.error("no objects with prefix %s", s3prefix)
+
+
+################################################################
+### hashing routines
+################################################################
+
 
 BUFSIZE=65536
 def import_s3obj(obj):
@@ -156,16 +175,42 @@ def import_s3obj(obj):
         else:
             raise e
 
-    # Get a handle to the s3 file
+    # Get a handle to the s3 object
     s3client  = boto3.client('s3', config=Config(signature_version=UNSIGNED))
     o2   = s3client.get_object(Bucket=obj['Bucket'], Key=obj['Key'])
 
     """
     Typical o2:
-    {'ResponseMetadata': {'RequestId': 'EF6D913C1C48EEF1', 'HostId': 'CB6TRV/KlxtzU4FbXiYQKb6+PPYztCzvdI1FcXAeAoNeXkiGhm+BwBrrIUqbNyGPy3XsqsKENOU=', 'HTTPStatusCode': 200, 'HTTPHeaders': {'x-amz-id-2': 'CB6TRV/KlxtzU4FbXiYQKb6+PPYztCzvdI1FcXAeAoNeXkiGhm+BwBrrIUqbNyGPy3XsqsKENOU=', 'x-amz-request-id': 'EF6D913C1C48EEF1', 'date': 'Tue, 16 Feb 2021 01:32:14 GMT', 'last-modified': 'Sat, 21 Nov 2020 23:07:31 GMT', 'etag': '"3045e3c6a79e791bbacd97a06c27f969"', 'x-amz-storage-class': 'INTELLIGENT_TIERING', 'x-amz-version-id': 'kNdAWbQHuj0p_HxvobEGvcjuZKWox7Ct', 'accept-ranges': 'bytes', 'content-type': 'audio/mpeg', 'content-length': '384429', 'server': 'AmazonS3'}, 'RetryAttempts': 0}, 'AcceptRanges': 'bytes', 'LastModified': datetime.datetime(2020, 11, 21, 23, 7, 31, tzinfo=tzutc()), 'ContentLength': 384429, 'ETag': '"3045e3c6a79e791bbacd97a06c27f969"', 'VersionId': 'kNdAWbQHuj0p_HxvobEGvcjuZKWox7Ct', 'ContentType': 'audio/mpeg', 'Metadata': {}, 'StorageClass': 'INTELLIGENT_TIERING', 'Body': <botocore.response.StreamingBody object at 0x7f0d5f98ca10>}
+    {'ResponseMetadata':
+      {'RequestId': 'EF6D913C1C48EEF1',
+       'HostId': 'CB6TRV/KlxtzU4FbXiYQKb6+PPYztCzvdI1FcXAeAoNeXkiGhm+BwBrrIUqbNyGPy3XsqsKENOU=',
+       'HTTPStatusCode': 200,
+       'HTTPHeaders':
+          {'x-amz-id-2': 'CB6TRV/KlxtzU4FbXiYQKb6+PPYztCzvdI1FcXAeAoNeXkiGhm+BwBrrIUqbNyGPy3XsqsKENOU=',
+           'x-amz-request-id': 'EF6D913C1C48EEF1',
+           'date': 'Tue, 16 Feb 2021 01:32:14 GMT',
+           'last-modified': 'Sat, 21 Nov 2020 23:07:31 GMT',
+           'etag': '"3045e3c6a79e791bbacd97a06c27f969"',
+           'x-amz-storage-class': 'INTELLIGENT_TIERING',
+           'x-amz-version-id': 'kNdAWbQHuj0p_HxvobEGvcjuZKWox7Ct',
+           'accept-ranges': 'bytes',
+           'content-type': 'audio/mpeg',
+           'content-length': '384429',
+           'server': 'AmazonS3'},
+       'RetryAttempts': 0},
+      'AcceptRanges': 'bytes',
+      'LastModified': datetime.datetime(2020, 11, 21, 23, 7, 31, tzinfo=tzutc()),
+      'ContentLength': 384429,
+      'ETag': '"3045e3c6a79e791bbacd97a06c27f969"',
+      'VersionId': 'kNdAWbQHuj0p_HxvobEGvcjuZKWox7Ct',
+      'ContentType': 'audio/mpeg',
+      'Metadata': {},
+      'StorageClass': 'INTELLIGENT_TIERING',
+      'Body': <botocore.response.StreamingBody object at 0x7f0d5f98ca10>}
     """
-    t0 = time.time()
-    body         = o2['Body']
+    # Download and incrementally hash the object's body
+    t0       = time.time()
+    body     = o2['Body']
     bytes_hashed = 0
     sha2_256 = hashlib.sha256()
     sha3_256 = hashlib.sha3_256()
@@ -186,42 +231,13 @@ def import_s3obj(obj):
     logging.info('updated %s.  %d bytes, %6.2f seconds.  (%d bytes/sec)', s3key, bytes_hashed, (t1 -t0), bytes_hashed /(t1 -t0))
     return s3key
 
-def s3_get_objects(prefix='', limit=sys.maxsize):
-    s3client  = boto3.client('s3')
-    paginator = s3client.get_paginator('list_objects_v2')
-    pages = paginator.paginate(Bucket=S3_LOG_BUCKET, Prefix='')
-    count = 0
-    for page in pages:
-        if limit > 0:
-            logging.debug("count=%d limit=%d",count,limit)
-        if count > limit:
-            break
-        if 'Contents' not in page:
-            continue
-        for obj in page.get('Contents'):
-            count+=1
-            if count > limit:
-                break
-            yield(obj)
-
-def s3_logs_info(limit=sys.maxsize):
-    earliest = None
-    latest   = None
-    count = 0
-    for obj in s3_get_objects('', limit=limit):
-        count += 1
-        earliest = obj['LastModified'] if earliest is None else min(earliest,obj['LastModified'])
-        latest   = obj['LastModified'] if latest is None else max(earliest,obj['LastModified'])
-    print("Count:",count)
-    print("Earliest:",earliest)
-    print("Latest:",latest)
 
 def hash_s3prefix(auth, s3prefix, threads=40):
-    """Because we can enumerate all of digitalcorpora in 3 seconds, we do that here. We then request hashing using python's multiprocessing module"""
+    """Find all of the objects with an s3prefix that require hashing, then download and hash them all in parallel"""
     p = urllib.parse.urlparse(s3prefix)
 
     # First, get all of the keys and etags from the database that match this prefix
-    # (Because of MD5 collisions, we check both etag and mtime)
+    # We no longer require that mtime hasn't been changed because of timezone problems.
     # We need to use our own auth because we don't want it activated
     auth2 = copy.deepcopy(auth)
     lk = p.path[1:] +"%"
@@ -236,48 +252,53 @@ def hash_s3prefix(auth, s3prefix, threads=40):
     s3client  = boto3.client('s3', config=Config(signature_version=UNSIGNED))
     paginator = s3client.get_paginator('list_objects_v2')
     pages = paginator.paginate(Bucket=p.netloc, Prefix=p.path[1:])
-    objs = []
     already_hashed = 0
-    for page in pages:
-        contents = page.get('Contents')
-        if contents is None:
-            logging.error("no objects with prefix %s", s3prefix)
-            continue
-        for obj in contents:
-            s3key = obj['Key']
-            try:
-                t1 = obj['LastModified'].replace(tzinfo=None)
-                t2 = hashed[s3key]['mtime']
-                # for now ignore t1==t2 because our time was wrong.
-                # if obj['ETag']==hashed[s3key]['ETag'] and t1==t2:
-                if obj['ETag']==hashed[s3key]['ETag']:
-                    logging.debug('Already hashed in database: %s', obj['Key'])
-                    already_hashed +=1
-                    if t1!=t2:
-                        logging.info("set mtime in database for %s from %s to %s for etag %s",
-                                     obj['Key'], t2, t1, obj['ETag'])
-                        dbfile.DBMySQL.csfr(auth2,
-                                            "UPDATE downloadable SET mtime=%s WHERE s3key=%s AND etag=%s",
-                                            (t1, obj['Key'], obj['ETag']))
-                    continue
-            # pylint: disable=W0612
-            except KeyError as e:
-                pass
 
-            obj['auth']   = auth
-            obj['Bucket'] = p.netloc
-            objs.append(obj)
+    # This is surprisingly fast
+    to_hash = []
+    for obj in s3_get_objects(s3prefix=s3prefix):
+        s3key = obj['Key']
+        try:
+            t1 = obj['LastModified'].replace(tzinfo=None)
+            t2 = hashed[s3key]['mtime']
+            # for now ignore t1==t2 because our time was in local time, and the timezone changed
+            # if obj['ETag']==hashed[s3key]['ETag'] and t1==t2:
+            if obj['ETag']==hashed[s3key]['ETag']:
+                logging.debug('Already hashed in database: %s', obj['Key'])
+                already_hashed +=1
+                if t1!=t2:
+                    logging.info("set mtime in database for %s from %s to %s for etag %s",
+                                 obj['Key'], t2, t1, obj['ETag'])
+                    dbfile.DBMySQL.csfr(auth2,
+                                        "UPDATE downloadable SET mtime=%s WHERE s3key=%s AND etag=%s",
+                                        (t1, obj['Key'], obj['ETag']))
+                continue
+        # pylint: disable=W0612
+        except KeyError as e:
+            pass
 
-    logging.info("Objects to hash: %d  (already hashed: %d)", len(objs), already_hashed)
+        obj['auth']   = auth
+        obj['Bucket'] = p.netloc
+        to_hash.append(obj)
+
+    # Now hash those that need to be hashed
+    logging.info("Objects to hash: %d  (already hashed: %d)", len(to_hash), already_hashed)
     if threads==1:
-        for obj in objs:
+        for obj in to_hash:
             import_s3obj(obj)
     else:
         with multiprocessing.Pool(threads) as p:
-            p.map(import_s3obj, objs)
+            p.map(import_s3obj, to_hash)
+
+################################################################
+### logfile management routines
+################################################################
+
+
+## Insert an object (S3 or Weblog) into the SQL database associated with logs
+## Requires updating the downloadable and the user_agent tables as well
 
 seen_dates = set()
-
 ingested_s3key = set()
 ingested_user_agent = set()
 def insert_obj_into_db(auth, obj):
@@ -311,6 +332,20 @@ def insert_obj_into_db(auth, obj):
                         """,
                         (obj.key, obj.user_agent, obj.remote_ip, obj.dtime, obj.bytes_sent))
 
+
+## s3 logs (a collection of objects in an S3 bucket; each object can have 1 or more S3 logs.)
+def s3_logs_info(limit=sys.maxsize):
+    """Report information regarding S3 logs that haven't been downloaded"""
+    earliest = None
+    latest   = None
+    count = 0
+    for obj in s3_get_objects('', limit=limit):
+        count += 1
+        earliest = obj['LastModified'] if earliest is None else min(earliest,obj['LastModified'])
+        latest   = obj['LastModified'] if latest is None else max(earliest,obj['LastModified'])
+    print("Count:",count)
+    print("Earliest:",earliest)
+    print("Latest:",latest)
 
 # pylint: disable=R0911
 def validate_obj(auth, obj):
@@ -537,6 +572,23 @@ def logfile_opener(fname):
     else:
         return open(fname, "rt")
 
+def db_summarize_day( auth, day):
+    print(day)
+    next_day = day + datetime.timedelta(days=1)
+    cmd = ("INSERT INTO downloads (did, remote_ipaddr, user_agent_id, dtime, bytes_sent, summary) "
+           "SELECT did, remote_ipaddr, user_agent_id, DATE(dtime), SUM(bytes_sent), 1 "
+           "FROM downloads "
+           "WHERE dtime>=%s AND dtime<%s AND summary=0 GROUP BY did, remote_ipaddr, user_agent_id, DATE(dtime)")
+    dbfile.DBMySQL.csfr(auth, cmd, (day, next_day))
+    cmd = ("DELETE FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=0")
+    dbfile.DBMySQL.csfr(auth, cmd, (day, next_day))
+
+def db_download_summarize( auth, first, last):
+    while first<=last:
+        db_summarize_day(auth, first)
+        first += datetime.timedelta(days=1)
+
+
 def db_gc( auth, s3prefix ):
     db = dbfile.DBMySQL( auth )
     c = db.cursor()
@@ -599,7 +651,8 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action='store_true')
     parser.add_argument("--verbose", action='store_true')
     parser.add_argument("--threads", "-j", type=int, default=1)
-    parser.add_argument("--limit", type=int, default=sys.maxsize, help="Limit number of imports to this number when reading from text files or s3 objects when reading from s3")
+    parser.add_argument("--limit", type=int, default=sys.maxsize,
+                        help="Limit number of imports to this number when reading from text files or s3 objects when reading from s3")
 
     # One of these options must be provided - tell me what to do
     g = parser.add_mutually_exclusive_group(required=True)
@@ -614,6 +667,10 @@ if __name__ == "__main__":
     g.add_argument("--copy", action='store_true',
                    help='Copy downloads from test to prod that are not present in prod')
     g.add_argument("--gc", action='store_true', help='Garbage collect the MySQL database')
+    g.add_argument("--download_summarize", action='store_true', help='summarize the downloads for a given day')
+    parser.add_argument("--first", help="first date for summarizaiton")
+    parser.add_argument("--last", help="last date for summarizaiton")
+
 
     # Tell me how to authenticate ---
     g = parser.add_mutually_exclusive_group(required=True)
@@ -690,5 +747,15 @@ if __name__ == "__main__":
         db_gc( auth, "s3://" + D3_DATA_BUCKET)
     elif args.db_stats:
         db_stats( auth )
+    elif args.download_summarize:
+        if args.first==None:
+            first = dbfile.DBMySQL.csfr(auth, "select date(dtime) from downloads where summary=0 order by dtime limit 1")[0][0]
+        else:
+            first = datetime.datetime.strptime(args.first, "%Y-%m-%d")
+        if args.last==None:
+            last = dbfile.DBMySQL.csfr(auth, "select date(dtime) from downloads where summary=0 order by dtime desc limit 1")[0][0]
+        else:
+            last = datetime.datetime.strptime(args.last, "%Y-%m-%d")
+        db_download_summarize(auth, first, last)
     else:
         raise RuntimeError("Unknown action")

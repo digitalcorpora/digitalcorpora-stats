@@ -21,16 +21,3 @@ def send_schema(cursor):
         statement = statement.strip()
         if len(statement):
             cursor.execute(statement)
-
-
-def send_weblog(cursor, obj):
-    """ Take a weblog agent and insert it into the digitalcorpora log file"""
-    from weblog.weblog import Weblog
-    assert isinstance(obj, Weblog)
-    if obj.is_download():
-        cursor.execute("INSERT INTO downloadable (s3key,bytes) VALUES (%s,%s) ON DUPLICATE KEY UPDATE bytes=bytes",
-                       (obj.path, obj.bytes))
-        cursor.execute("COMMIT")
-        cursor.execute("INSERT INTO downloads (did, ipaddr, dtime) VALUES ((select id from downloadable where s3key=%s), %s, %s)",
-                       (obj.path, obj.ipaddr, obj.dtime))
-        cursor.execute("COMMIT")
