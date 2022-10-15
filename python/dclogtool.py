@@ -37,13 +37,11 @@ from ctools import dbfile
 from ctools import clogging
 import ctools.lock
 
-year = datetime.datetime.now().year
-
 S3_DATA_BUCKET = 'digitalcorpora'
 S3_LOG_BUCKET = 'digitalcorpora-logs'
 
 # The logfile for this year
-S3_LOGFILE_PATH = os.path.join( os.getenv("HOME"), "s3logs", f"s3logs.{year}.log")
+S3_LOGFILE_PATH = os.path.join( os.getenv("HOME"), "s3logs", f"s3logs.{datetime.datetime.now().year}.log")
 DEFAULT_TIMEOUT = 30
 WRITE_OBJECTS = set([ 'REST.PUT.PART',
                       'REST.PUT.OBJECT',
@@ -118,11 +116,11 @@ UNKNOWN  = 'UNKNOWN'
 ### Low-level routines for working with S3
 ################################################################
 
-def s3_get_objects(s3prefix='', limit=sys.maxsize):
+def s3_get_objects(s3bucket, s3prefix='', limit=sys.maxsize):
     """Iterator for all s3 objects beginning with a prefix"""
     s3client  = boto3.client('s3')
     paginator = s3client.get_paginator('list_objects_v2')
-    pages = paginator.paginate(Bucket=S3_LOG_BUCKET, Prefix=s3prefix)
+    pages = paginator.paginate(Bucket=s3bucket, Prefix=s3prefix)
     count = 0
     for page in pages:
         if limit > 0:
@@ -137,7 +135,7 @@ def s3_get_objects(s3prefix='', limit=sys.maxsize):
                 break
             yield(obj)
     if count==0:
-        logging.error("no objects with prefix %s", s3prefix)
+        logging.error("no objects with prefix s3://%s/", bucket, s3prefix)
 
 
 ################################################################
@@ -249,29 +247,32 @@ def hash_s3prefix(auth, s3prefix, threads=40):
     hashed = {row[0]: {'ETag': row[1], 'mtime': row[2]} for row in rows}
 
     # Now get directory information for all of the S3 objects on the website. See if the etag has changed
-    s3client  = boto3.client('s3', config=Config(signature_version=UNSIGNED))
-    paginator = s3client.get_paginator('list_objects_v2')
-    pages = paginator.paginate(Bucket=p.netloc, Prefix=p.path[1:])
+    #s3client  = boto3.client('s3', config=Config(signature_version=UNSIGNED))
+    #paginator = s3client.get_paginator('list_objects_v2')
+    #pages = paginator.paginate(Bucket=p.netloc, Prefix=p.path[1:])
     already_hashed = 0
 
     # This is surprisingly fast
     to_hash = []
-    for obj in s3_get_objects(s3prefix=s3prefix):
+    print(S3_DATA_BUCKET,s3prefix)
+    for obj in s3_get_objects(S3_DATA_BUCKET,s3prefix=s3prefix):
+        print("obj=",obj)
         s3key = obj['Key']
         try:
             t1 = obj['LastModified'].replace(tzinfo=None)
             t2 = hashed[s3key]['mtime']
+            print(s3key,t1,t2)
             # for now ignore t1==t2 because our time was in local time, and the timezone changed
             # if obj['ETag']==hashed[s3key]['ETag'] and t1==t2:
             if obj['ETag']==hashed[s3key]['ETag']:
                 logging.debug('Already hashed in database: %s', obj['Key'])
                 already_hashed +=1
-                if t1!=t2:
-                    logging.info("set mtime in database for %s from %s to %s for etag %s",
-                                 obj['Key'], t2, t1, obj['ETag'])
-                    dbfile.DBMySQL.csfr(auth2,
-                                        "UPDATE downloadable SET mtime=%s WHERE s3key=%s AND etag=%s",
-                                        (t1, obj['Key'], obj['ETag']))
+                #if t1!=t2:
+                #    logging.info("set mtime in database for %s from %s to %s for etag %s",
+                #                 obj['Key'], t2, t1, obj['ETag'])
+                #    dbfile.DBMySQL.csfr(auth2,
+                #                        "UPDATE downloadable SET mtime=%s WHERE s3key=%s AND etag=%s",
+                #                        (t1, obj['Key'], obj['ETag']))
                 continue
         # pylint: disable=W0612
         except KeyError as e:
@@ -339,7 +340,7 @@ def s3_logs_info(limit=sys.maxsize):
     earliest = None
     latest   = None
     count = 0
-    for obj in s3_get_objects('', limit=limit):
+    for obj in s3_get_objects(S3_LOG_BUCKET, '', limit=limit):
         count += 1
         earliest = obj['LastModified'] if earliest is None else min(earliest,obj['LastModified'])
         latest   = obj['LastModified'] if latest is None else max(earliest,obj['LastModified'])
@@ -428,7 +429,7 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, key):
     :param auth: authentication token to write to the database
     :param key: key of the logfile
     """
-    config = Config(connect_timeout=5, retries={'max_attempts': 4})
+    config = Config(connect_timeout=5, retries={'max_attempts': 4}, signature_version=Unsigned)
     count = 0
     s3client  = boto3.client('s3', config=config)
     o2   = s3client.get_object(Bucket=S3_LOG_BUCKET, Key=key)
@@ -488,18 +489,20 @@ def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize, timeout
     # Start the threads
     for _ in range(threads):
         threading.Thread(target=worker, daemon=True).start()
-    s3client  = boto3.client('s3')
-    paginator = s3client.get_paginator('list_objects_v2')
-    pages = paginator.paginate(Bucket=S3_LOG_BUCKET, Prefix='')
-    for page in pages:
-        if count > limit:
-            logging.debug("count=%d exceeds limit (%d)",count,limit)
-            break
-        if 'Contents' not in page:
-            continue
-
-        objs = page.get('Contents')
-        for (ct,obj) in enumerate(objs,1):
+    #s3client  = boto3.client('s3')
+    #paginator = s3client.get_paginator('list_objects_v2')
+    #pages = paginator.paginate(Bucket=S3_LOG_BUCKET, Prefix='')
+    #for page in pages:
+    #    if count > limit:
+    #        logging.debug("count=%d exceeds limit (%d)",count,limit)
+    #        break
+    #    if 'Contents' not in page:
+    #        continue
+    #
+    #    objs = page.get('Contents')
+    #    for (ct,obj) in enumerate(objs,1):
+    if True:
+        for (ct,obj) in enumerate( s3_get_objects(S3_LOG_BUCKET, ''),1):
             if count>limit:
                 break
             q.put(obj['Key'],timeout=timeout)  # if we have blocked more than 30 seconds, something is wrong
@@ -573,10 +576,11 @@ def logfile_opener(fname):
         return open(fname, "rt")
 
 def db_summarize_day( auth, day):
+    """Note: This could be updated to capture the speed of the download or the duration of the download. But why bother?"""
     print(day)
     next_day = day + datetime.timedelta(days=1)
     cmd = ("INSERT INTO downloads (did, remote_ipaddr, user_agent_id, dtime, bytes_sent, summary) "
-           "SELECT did, remote_ipaddr, user_agent_id, DATE(dtime), SUM(bytes_sent), 1 "
+           "SELECT did, remote_ipaddr, user_agent_id, MIN(dtime), SUM(bytes_sent), 1 "
            "FROM downloads "
            "WHERE dtime>=%s AND dtime<%s AND summary=0 GROUP BY did, remote_ipaddr, user_agent_id, DATE(dtime)")
     dbfile.DBMySQL.csfr(auth, cmd, (day, next_day))
@@ -670,7 +674,7 @@ if __name__ == "__main__":
     g.add_argument("--download_summarize", action='store_true', help='summarize the downloads for a given day')
     parser.add_argument("--first", help="first date for summarizaiton")
     parser.add_argument("--last", help="last date for summarizaiton")
-
+    parser.add_argument("--year", help="go from Jan 1 to Dec. 31 of this year",type=int)
 
     # Tell me how to authenticate ---
     g = parser.add_mutually_exclusive_group(required=True)
@@ -692,6 +696,14 @@ if __name__ == "__main__":
     if args.copy and args.test:
         logging.error("--copy requires --prod")
         sys.exit(1)
+
+    if args.year:
+        if args.first or args.last:
+            logging.error("--year overwrites --first and --list")
+            sys.exit(1)
+        args.first=f"{args.year}-01-01"
+        args.last =f"{args.year}-12-31"
+
 
     database = "dcstats_test" if not args.prod else 'dcstats'
     # Select the authentication approach

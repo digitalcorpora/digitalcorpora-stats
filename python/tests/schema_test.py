@@ -6,6 +6,11 @@ Make sure that the schema works.
 import pytest
 import pymysql
 import os
+import sys
+
+from os.path import abspath,dirname,basename
+
+sys.path.append( dirname( abspath( __file__ )))
 
 from weblog.weblog import Weblog
 
