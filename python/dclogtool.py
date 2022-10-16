@@ -150,7 +150,12 @@ def import_s3obj(obj):
     It does not import S3 download logs. Those are in a different format and are imported by add_download().
 
     Typical obj:
-    {'Key': 'corpora/files/2009-audio/media1/media1_27_192kbps_44100Hz_Stereo_art.mp3', 'LastModified': datetime.datetime(2020, 11, 21, 23, 7, 31, tzinfo=tzlocal()), 'ETag': '"3045e3c6a79e791bbacd97a06c27f969"', 'Size': 384429, 'StorageClass': 'INTELLIGENT_TIERING', 'Bucket': 'digitalcorpora'}
+    {'Key': 'corpora/files/2009-audio/media1/media1_27_192kbps_44100Hz_Stereo_art.mp3',
+     'LastModified': datetime.datetime(2020, 11, 21, 23, 7, 31, tzinfo=tzlocal()),
+     'ETag': '"3045e3c6a79e791bbacd97a06c27f969"',
+     'Size': 384429,
+     'StorageClass': 'INTELLIGENT_TIERING',
+     'Bucket': 'digitalcorpora'}
     :param auth: authentication object.
     :param obj: dictionary with s3 object information.
     """

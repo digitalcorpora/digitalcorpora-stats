@@ -53,7 +53,3 @@ def get_secret():
         return json.loads(get_secret_value_response['SecretString'])
     else:
         return base64.b64decode(get_secret_value_response['SecretBinary'])
-
-
-if __name__=="__main__":
-    print(get_secret())
