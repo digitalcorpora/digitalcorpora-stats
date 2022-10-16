@@ -32,10 +32,8 @@ def test_s3_get_objects():
     # Take the test objects and make them findable by key
     objs = { obj['Key']:obj for obj in S3TEST_OBJS}
 
-    p = urllib.parse.urlparse(S3TEST_URL)
-
     found = 0
-    for obj in dclogtool.s3_get_objects(s3bucket = p.netloc, s3prefix = p.path[1:]):
+    for obj in dclogtool.s3_get_objects( url = S3TEST_URL):
         key = obj['Key']
         if key in objs:
             assert objs[key] == obj

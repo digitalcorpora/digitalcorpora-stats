@@ -112,15 +112,41 @@ MISC     = 'MISC'
 BLOCKED  = 'BLOCKED'
 UNKNOWN  = 'UNKNOWN'
 
+# The config used for all S3 operations
+config = Config(connect_timeout=5, retries={'max_attempts': 4}, signature_version=UNSIGNED)
+
+
 ################################################################
 ### Low-level routines for working with S3
 ################################################################
 
-def s3_get_objects(s3bucket, s3prefix='', limit=sys.maxsize):
+def s3_get_object(*, Bucket=None, Key=None, url=None):
+    if url:
+        p = urllib.parse.urlparse(Prefix)
+        Bucket = p.netloc
+        Key    = p.path[1:]
+
+    assert Bucket is not None
+    assert Prefix is not None
+
+    s3client  = boto3.client('s3', config=config)
+    return s3client.get_object(Bucket=Bucket, Key=Key)
+
+
+def s3_get_objects(*, Bucket=None, Prefix=None, url=None, limit=sys.maxsize):
     """Iterator for all s3 objects beginning with a prefix"""
+
+    if url is not None:
+        p = urllib.parse.urlparse(url)
+        Bucket = p.netloc
+        Prefix = p.path[1:]
+
+    assert Bucket is not None
+    assert Prefix is not None
+
     s3client  = boto3.client('s3')
     paginator = s3client.get_paginator('list_objects_v2')
-    pages = paginator.paginate(Bucket=s3bucket, Prefix=s3prefix)
+    pages = paginator.paginate(Bucket=Bucket, Prefix=Prefix)
     count = 0
     for page in pages:
         if limit > 0:
@@ -135,7 +161,7 @@ def s3_get_objects(s3bucket, s3prefix='', limit=sys.maxsize):
                 break
             yield(obj)
     if count==0:
-        logging.error("no objects with prefix s3://%s/%s", s3bucket, s3prefix)
+        logging.error("no objects with prefix s3://%s/%s", Bucket, Prefix)
 
 
 ################################################################
@@ -179,8 +205,7 @@ def import_s3obj(obj):
             raise e
 
     # Get a handle to the s3 object
-    s3client  = boto3.client('s3', config=Config(signature_version=UNSIGNED))
-    o2   = s3client.get_object(Bucket=obj['Bucket'], Key=obj['Key'])
+    o2 = s3_get_object(Bucket = obj['Bucket'], Key=obj['Key'])
 
     """
     Typical o2:
@@ -235,9 +260,9 @@ def import_s3obj(obj):
     return s3key
 
 
-def hash_s3prefix(auth, s3prefix, threads=40):
-    """Find all of the objects with an s3prefix that require hashing, then download and hash them all in parallel"""
-    p = urllib.parse.urlparse(s3prefix)
+def hash_s3prefix(auth, Prefix, threads=40):
+    """Find all of the objects with an Prefix that require hashing, then download and hash them all in parallel"""
+    p = urllib.parse.urlparse(Prefix)
 
     # First, get all of the keys and etags from the database that match this prefix
     # We no longer require that mtime hasn't been changed because of timezone problems.
@@ -251,22 +276,15 @@ def hash_s3prefix(auth, s3prefix, threads=40):
     logging.info("found %d entries in database with hashes", len(rows))
     hashed = {row[0]: {'ETag': row[1], 'mtime': row[2]} for row in rows}
 
-    # Now get directory information for all of the S3 objects on the website. See if the etag has changed
-    #s3client  = boto3.client('s3', config=Config(signature_version=UNSIGNED))
-    #paginator = s3client.get_paginator('list_objects_v2')
-    #pages = paginator.paginate(Bucket=p.netloc, Prefix=p.path[1:])
     already_hashed = 0
 
     # This is surprisingly fast
     to_hash = []
-    print(S3_DATA_BUCKET,s3prefix)
-    for obj in s3_get_objects(S3_DATA_BUCKET,s3prefix=s3prefix):
-        print("obj=",obj)
+    for obj in s3_get_objects(S3_DATA_BUCKET,Prefix=Prefix):
         s3key = obj['Key']
         try:
             t1 = obj['LastModified'].replace(tzinfo=None)
             t2 = hashed[s3key]['mtime']
-            print(s3key,t1,t2)
             # for now ignore t1==t2 because our time was in local time, and the timezone changed
             # if obj['ETag']==hashed[s3key]['ETag'] and t1==t2:
             if obj['ETag']==hashed[s3key]['ETag']:
@@ -434,10 +452,8 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, key):
     :param auth: authentication token to write to the database
     :param key: key of the logfile
     """
-    config = Config(connect_timeout=5, retries={'max_attempts': 4}, signature_version=Unsigned)
     count = 0
-    s3client  = boto3.client('s3', config=config)
-    o2   = s3client.get_object(Bucket=S3_LOG_BUCKET, Key=key)
+    o2   = s3_get_object(Bucket=S3_LOG_BUCKET, Key=key)
     line_stream = codecs.getreader("utf-8")
     for line in line_stream(o2['Body']):
         obj = weblog.weblog.S3Log(line)
@@ -450,9 +466,9 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, key):
             count += 1
 
     # It turns out that deleting objects can take a really long time, so do it in another thread
-    def delete_object_worker(key=key):
-        s3client2  = boto3.client('s3')
-        s3client2.delete_object(Bucket=S3_LOG_BUCKET, Key=key)
+    def delete_object_worker(*, Key=Key):
+        s3client2  = boto3.client('s3', config)
+        s3client2.delete_object(Bucket=S3_LOG_BUCKET, Key=Key)
     threading.Thread(target=delete_object_worker, kwargs={"key":key}).start()
     s3_logfile_lock.acquire()
     s3_logfile.flush()
@@ -494,18 +510,6 @@ def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize, timeout
     # Start the threads
     for _ in range(threads):
         threading.Thread(target=worker, daemon=True).start()
-    #s3client  = boto3.client('s3')
-    #paginator = s3client.get_paginator('list_objects_v2')
-    #pages = paginator.paginate(Bucket=S3_LOG_BUCKET, Prefix='')
-    #for page in pages:
-    #    if count > limit:
-    #        logging.debug("count=%d exceeds limit (%d)",count,limit)
-    #        break
-    #    if 'Contents' not in page:
-    #        continue
-    #
-    #    objs = page.get('Contents')
-    #    for (ct,obj) in enumerate(objs,1):
     if True:
         for (ct,obj) in enumerate( s3_get_objects(S3_LOG_BUCKET, ''),1):
             if count>limit:
@@ -598,7 +602,7 @@ def db_download_summarize( auth, first, last):
         first += datetime.timedelta(days=1)
 
 
-def db_gc( auth, s3prefix ):
+def db_gc( auth, url ):
     db = dbfile.DBMySQL( auth )
     c = db.cursor()
     c.execute("SELECT s3key, id FROM downloadable")
@@ -606,19 +610,14 @@ def db_gc( auth, s3prefix ):
     print("keys in database:",len(s3keys_in_db))
 
     # Now get the list of objects in S3
-    p = urllib.parse.urlparse(s3prefix)
-    s3client  = boto3.client('s3', config=Config(signature_version=UNSIGNED))
-    paginator = s3client.get_paginator('list_objects_v2')
-    pages = paginator.paginate(Bucket=p.netloc, Prefix=p.path[1:])
     count = 0
-    for page in pages:
-        for obj in page.get('Contents'):
-            s3key = obj['Key']
-            if s3key not in s3keys_in_db:
-                print("missing:",s3key)
-            else:
-                del s3keys_in_db[s3key]
-            count += 1
+    for obj in s3_get_objects( url=url ):
+        s3key = obj['Key']
+        if s3key not in s3keys_in_db:
+            print("missing:",s3key)
+        else:
+            del s3keys_in_db[s3key]
+        count += 1
     print("Objects in s3:",count)
     print("Objects no longer in S3:",len(s3keys_in_db))
 
