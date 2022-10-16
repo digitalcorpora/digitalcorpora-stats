@@ -113,7 +113,8 @@ BLOCKED  = 'BLOCKED'
 UNKNOWN  = 'UNKNOWN'
 
 # The config used for all S3 operations
-config = Config(connect_timeout=5, retries={'max_attempts': 4}, signature_version=UNSIGNED)
+config_unsigned = Config(connect_timeout=5, retries={'max_attempts': 4}, signature_version=UNSIGNED)
+config_signed   = Config(connect_timeout=5, retries={'max_attempts': 4})
 
 
 ################################################################
@@ -121,22 +122,23 @@ config = Config(connect_timeout=5, retries={'max_attempts': 4}, signature_versio
 ################################################################
 
 
-def s3_get_object(*, Bucket=None, Key=None, url=None):
+def s3_get_object(*, Bucket=None, Key=None, url=None, Signed = True):
+    logging.debug("Bucket=%s Key=%s url=%s Signed=%s",Bucket,Key,url,Signed)
     if url:
         p = urllib.parse.urlparse(Prefix)
         Bucket = p.netloc
         Key    = p.path[1:]
 
     assert Bucket is not None
-    assert Prefix is not None
+    assert Key is not None
 
-    s3client  = boto3.client('s3', config=config)
+    s3client  = boto3.client('s3', config = config_signed if Signed else config_unsigned)
     return s3client.get_object(Bucket=Bucket, Key=Key)
 
 
-def s3_get_objects(*, Bucket=None, Prefix=None, url=None, limit=sys.maxsize):
+def s3_get_objects(*, Bucket=None, Prefix=None, url=None, limit=sys.maxsize, Signed=True):
     """Iterator for all s3 objects beginning with a prefix"""
-
+    logging.debug("Bucket=%s Prefix=%s url=%s limit=%s Signed=%s",Bucket,Prefix,url,limit,Signed)
     if url is not None:
         p = urllib.parse.urlparse(url)
         Bucket = p.netloc
@@ -145,7 +147,7 @@ def s3_get_objects(*, Bucket=None, Prefix=None, url=None, limit=sys.maxsize):
     assert Bucket is not None
     assert Prefix is not None
 
-    s3client  = boto3.client('s3')
+    s3client  = boto3.client('s3', config = config_signed if Signed else config_unsigned)
     paginator = s3client.get_paginator('list_objects_v2')
     pages = paginator.paginate(Bucket=Bucket, Prefix=Prefix)
     count = 0
@@ -163,6 +165,14 @@ def s3_get_objects(*, Bucket=None, Prefix=None, url=None, limit=sys.maxsize):
             yield(obj)
     if count==0:
         logging.error("no objects with prefix s3://%s/%s", Bucket, Prefix)
+
+
+def s3_delete_object(*, Bucket, Key):
+    logging.debug("Bucket=%s Key=%s",Bucket,Key)
+    assert type(Bucket)==str
+    assert type(Key)==str
+    s3client  = boto3.client('s3', config = config_signed)
+    s3client.delete_object(Bucket=Bucket, Key=Key)
 
 
 ################################################################
@@ -206,7 +216,7 @@ def import_s3obj(obj):
             raise e
 
     # Get a handle to the s3 object
-    o2 = s3_get_object(Bucket = obj['Bucket'], Key=obj['Key'])
+    o2 = s3_get_object(Bucket = obj['Bucket'], Key=obj['Key'], Signed=True)
 
     """
     Typical o2:
@@ -257,10 +267,11 @@ def import_s3obj(obj):
     cmd = "update downloadable set ETag=%s, mtime=%s, bytes=%s, sha2_256=%s, sha3_256=%s where s3key=%s"
     vals = (o2['ETag'], o2['LastModified'], bytes_hashed, sha2_256.hexdigest(), sha3_256.hexdigest(), s3key)
     dbfile.DBMySQL.csfr(auth, cmd, vals)
-    logging.info('updated %s.  %d bytes, %6.2f seconds.  (%d bytes/sec)', s3key, bytes_hashed, (t1 -t0), bytes_hashed /(t1 -t0))
+    logging.info('updated %s.  %d bytes, %6.2f seconds.  (%d Mb/sec)', s3key, bytes_hashed, (t1 -t0), (bytes_hashed /1000000) / (t1 -t0))
     return s3key
 
 
+REQUIRE_TIME_MATCH = False
 def hash_s3prefix(auth, Prefix, threads=40):
     """Find all of the objects with an Prefix that require hashing, then download and hash them all in parallel"""
     p = urllib.parse.urlparse(Prefix)
@@ -281,7 +292,7 @@ def hash_s3prefix(auth, Prefix, threads=40):
 
     # This is surprisingly fast
     to_hash = []
-    for obj in s3_get_objects(S3_DATA_BUCKET,Prefix=Prefix):
+    for obj in s3_get_objects(S3_DATA_BUCKET, Prefix=Prefix, Signed=False):
         s3key = obj['Key']
         try:
             t1 = obj['LastModified'].replace(tzinfo=None)
@@ -292,12 +303,12 @@ def hash_s3prefix(auth, Prefix, threads=40):
             if obj['ETag']==hashed[s3key]['ETag']:
                 logging.debug('Already hashed in database: %s', obj['Key'])
                 already_hashed +=1
-                #if t1!=t2:
-                #    logging.info("set mtime in database for %s from %s to %s for etag %s",
-                #                 obj['Key'], t2, t1, obj['ETag'])
-                #    dbfile.DBMySQL.csfr(auth2,
-                #                        "UPDATE downloadable SET mtime=%s WHERE s3key=%s AND etag=%s",
-                #                        (t1, obj['Key'], obj['ETag']))
+                if (t1!=t2) and REQUIRE_TIME_MATCH:
+                    logging.info("set mtime in database for %s from %s to %s for etag %s",
+                                 obj['Key'], t2, t1, obj['ETag'])
+                    dbfile.DBMySQL.csfr(auth2,
+                                        "UPDATE downloadable SET mtime=%s WHERE s3key=%s AND etag=%s",
+                                        (t1, obj['Key'], obj['ETag']))
                 continue
         # pylint: disable=W0612
         except KeyError as e:
@@ -365,7 +376,7 @@ def s3_logs_info(limit=sys.maxsize):
     earliest = None
     latest   = None
     count = 0
-    for obj in s3_get_objects(S3_LOG_BUCKET, '', limit=limit):
+    for obj in s3_get_objects( Bucket=S3_LOG_BUCKET, Prefix='', limit=limit, Signed=True):
         count += 1
         earliest = obj['LastModified'] if earliest is None else min(earliest,obj['LastModified'])
         latest   = obj['LastModified'] if latest is None else max(earliest,obj['LastModified'])
@@ -449,13 +460,15 @@ def logfile_ingest(auth, f, factory):
     for (k,v) in sums.items():
         print(k,v)
 
-def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, key):
+def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, Key):
     """Given an s3 key, ingest each of its records (there can be many), and them to the databse, and then delete it.
     :param auth: authentication token to write to the database
     :param key: key of the logfile
     """
+    assert Key is not None
+    assert type(Key)==str
     count = 0
-    o2   = s3_get_object(Bucket=S3_LOG_BUCKET, Key=key)
+    o2   = s3_get_object(Bucket=S3_LOG_BUCKET, Key=Key, Signed=True)
     line_stream = codecs.getreader("utf-8")
     for line in line_stream(o2['Body']):
         obj = weblog.weblog.S3Log(line)
@@ -468,10 +481,8 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, key):
             count += 1
 
     # It turns out that deleting objects can take a really long time, so do it in another thread
-    def delete_object_worker(*, Key=Key):
-        s3client2  = boto3.client('s3', config)
-        s3client2.delete_object(Bucket=S3_LOG_BUCKET, Key=Key)
-    threading.Thread(target=delete_object_worker, kwargs={"key":key}).start()
+    threading.Thread(target=s3_delete_object, kwargs={'Bucket':S3_LOG_BUCKET, 'Key':Key}).start()
+    # s3_delete_object(Bucket=S3_LOG_BUCKET, Key=Key)
     s3_logfile_lock.acquire()
     s3_logfile.flush()
     s3_logfile_lock.release()
@@ -498,9 +509,8 @@ def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize, timeout
         # deepcopy assures that each thread has its own copy of the auth object.
         auth2 = copy.deepcopy(auth)
         while True:
-            logging.debug("%d - Calling get...",threading.get_ident())
             key = q.get()
-            logging.debug("%d - got %s",threading.get_ident(),key)
+            logging.debug("key=%s",key)
             if key==DIE_THREAD:
                 q.task_done()
                 return
@@ -513,7 +523,7 @@ def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize, timeout
     for _ in range(threads):
         threading.Thread(target=worker, daemon=True).start()
     if True:
-        for (ct,obj) in enumerate( s3_get_objects(S3_LOG_BUCKET, ''),1):
+        for (ct,obj) in enumerate( s3_get_objects( Bucket=S3_LOG_BUCKET, Prefix=''),1):
             if count>limit:
                 break
             q.put(obj['Key'],timeout=timeout)  # if we have blocked more than 30 seconds, something is wrong
@@ -530,9 +540,7 @@ def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize, timeout
                     raise RuntimeError("Received DIE_PARENT")
             time.sleep(0)
 
-    # Block until all tasks are done
-    # Don't bother killing the workers (why not?)
-    logging.debug("done looping over pages")
+    # Tell threads to die, then block till they all die.
     for _ in range(threads):
         q.put(DIE_THREAD)
     q.join()
@@ -613,7 +621,7 @@ def db_gc( auth, url ):
 
     # Now get the list of objects in S3
     count = 0
-    for obj in s3_get_objects( url=url ):
+    for obj in s3_get_objects( url=url, Signed=True ):
         s3key = obj['Key']
         if s3key not in s3keys_in_db:
             print("missing:",s3key)
@@ -694,7 +702,7 @@ if __name__ == "__main__":
 
     clogging.add_argument(parser)
     args = parser.parse_args()
-    clogging.setup(args.loglevel)
+    clogging.setup(args.loglevel, log_format=clogging.LOG_FORMAT + " %(thread)d ")
 
     if args.verbose:
         logging.getLogger().setLevel(logging.INFO)
