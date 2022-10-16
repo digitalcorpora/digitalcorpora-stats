@@ -135,7 +135,7 @@ def s3_get_objects(s3bucket, s3prefix='', limit=sys.maxsize):
                 break
             yield(obj)
     if count==0:
-        logging.error("no objects with prefix s3://%s/", bucket, s3prefix)
+        logging.error("no objects with prefix s3://%s/%s", s3bucket, s3prefix)
 
 
 ################################################################
