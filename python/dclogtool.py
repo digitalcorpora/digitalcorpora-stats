@@ -120,6 +120,7 @@ config = Config(connect_timeout=5, retries={'max_attempts': 4}, signature_versio
 ### Low-level routines for working with S3
 ################################################################
 
+
 def s3_get_object(*, Bucket=None, Key=None, url=None):
     if url:
         p = urllib.parse.urlparse(Prefix)
@@ -285,6 +286,7 @@ def hash_s3prefix(auth, Prefix, threads=40):
         try:
             t1 = obj['LastModified'].replace(tzinfo=None)
             t2 = hashed[s3key]['mtime']
+            print(s3key,t1,t2)
             # for now ignore t1==t2 because our time was in local time, and the timezone changed
             # if obj['ETag']==hashed[s3key]['ETag'] and t1==t2:
             if obj['ETag']==hashed[s3key]['ETag']:
