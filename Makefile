@@ -2,7 +2,7 @@ pylint:
 	(cd python; make pylint)
 
 dreamhost-download-s3logs:
-	(source $$HOME/dbwriter.bash; printenv; cd python; python3 dclogtool.py --s3_logs_download_ingest_and_save --env --prod --verbose --debug)
+	(source $$HOME/dbwriter.bash; cd python; python3 dclogtool.py --s3_logs_download_ingest_and_save --env --prod  -j10)
 
 check:
 	make pytest

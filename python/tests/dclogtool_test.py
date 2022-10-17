@@ -8,7 +8,7 @@ import sys
 import urllib
 
 from os.path import abspath,dirname,basename
-sys.path.append( dirname( abspath( __file__ )))
+sys.path.append( dirname(dirname( abspath( __file__ ))))
 
 import datetime
 from dateutil.tz import tzutc
@@ -32,15 +32,8 @@ def test_s3_get_objects():
     # Take the test objects and make them findable by key
     objs = { obj['Key']:obj for obj in S3TEST_OBJS}
 
-<<<<<<< HEAD
     found = 0
     for obj in dclogtool.s3_get_objects( url = S3TEST_URL):
-=======
-    p = urllib.parse.urlparse(S3TEST_URL)
-
-    found = 0
-    for obj in dclogtool.s3_get_objects(s3bucket = p.netloc, s3prefix = p.path[1:]):
->>>>>>> origin/main
         key = obj['Key']
         if key in objs:
             assert objs[key] == obj
