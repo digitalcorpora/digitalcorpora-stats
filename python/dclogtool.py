@@ -37,6 +37,13 @@ from ctools import dbfile
 from ctools import clogging
 import ctools.lock
 
+stats = defaultdict(int)
+STAT_S3_OBJECTS = 'S3_OBJECTS'
+STAT_S3_RECORDS = 'S3_RECORDS'
+STAT_S3_DOWNLOAD_RECORDS = 'S3_DOWNLOAD_RECORDS'
+STAT_DOWNLOADS = 'DOWNLOADS'
+
+
 S3_DATA_BUCKET = 'digitalcorpora'
 S3_LOG_BUCKET = 'digitalcorpora-logs'
 
@@ -368,7 +375,8 @@ def insert_obj_into_db(auth, obj):
                                %s,%s,%s)
                         """,
                         (obj.key, obj.user_agent, obj.remote_ip, obj.dtime, obj.bytes_sent))
-
+    stats[STAT_DOWNLOADS] += 1
+    logging.info("%s %s %s bytes=%d",obj.dtime,obj.key,obj.remote_ip,obj.bytes_sent)
 
 ## s3 logs (a collection of objects in an S3 bucket; each object can have 1 or more S3 logs.)
 def s3_logs_info(limit=sys.maxsize):
@@ -377,10 +385,9 @@ def s3_logs_info(limit=sys.maxsize):
     latest   = None
     count = 0
     for obj in s3_get_objects( Bucket=S3_LOG_BUCKET, Prefix='', limit=limit, Signed=True):
-        count += 1
+        stats[STAT_S3_OBJECTS] += 1
         earliest = obj['LastModified'] if earliest is None else min(earliest,obj['LastModified'])
         latest   = obj['LastModified'] if latest is None else max(earliest,obj['LastModified'])
-    print("Count:",count)
     print("Earliest:",earliest)
     print("Latest:",latest)
 
@@ -473,7 +480,9 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, Key):
     for line in line_stream(o2['Body']):
         obj = weblog.weblog.S3Log(line)
         what = validate_obj(auth, obj)
+        stats[STAT_S3_RECORDS] += 1
         if what==DOWNLOAD:
+            stats[STAT_S3_DOWNLOAD_RECORDS] += 1
             insert_obj_into_db(auth, obj)
             s3_logfile_lock.acquire()
             s3_logfile.write(line)
@@ -524,6 +533,7 @@ def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize, timeout
         threading.Thread(target=worker, daemon=True).start()
     if True:
         for (ct,obj) in enumerate( s3_get_objects( Bucket=S3_LOG_BUCKET, Prefix=''),1):
+            stats[STAT_S3_OBJECTS] += 1
             if count>limit:
                 break
             q.put(obj['Key'],timeout=timeout)  # if we have blocked more than 30 seconds, something is wrong
@@ -611,6 +621,10 @@ def db_download_summarize( auth, first, last):
         db_summarize_day(auth, first)
         first += datetime.timedelta(days=1)
 
+
+def print_statistics():
+    for (k,v) in stats.items():
+        print(k,v)
 
 def db_gc( auth, url ):
     db = dbfile.DBMySQL( auth )
@@ -702,7 +716,9 @@ if __name__ == "__main__":
 
     clogging.add_argument(parser)
     args = parser.parse_args()
-    clogging.setup(args.loglevel, log_format=clogging.LOG_FORMAT + " %(thread)d ")
+    clogging.setup(args.loglevel,
+                   log_format=clogging.LOG_FORMAT.replace("%(message)s",
+                                                          "%(thread)d %(message)s"))
 
     if args.verbose:
         logging.getLogger().setLevel(logging.INFO)
@@ -764,7 +780,11 @@ if __name__ == "__main__":
     elif args.hash_s3prefix:
         hash_s3prefix(auth, args.hash_s3prefix, threads=args.threads)
     elif args.s3_logs_download_ingest_and_save:
-        s3_logs_download_ingest_and_save(auth, args.threads, args.limit)
+        try:
+            s3_logs_download_ingest_and_save(auth, args.threads, args.limit)
+        except KeyboardInterrupt as e:
+            print(e)
+        print_statistics()
     elif args.s3_logs_info:
         s3_logs_info(args.limit)
     elif args.copy:
