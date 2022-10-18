@@ -41,7 +41,9 @@ stats = defaultdict(int)
 STAT_S3_OBJECTS = 'S3_OBJECTS'
 STAT_S3_RECORDS = 'S3_RECORDS'
 STAT_S3_DOWNLOAD_RECORDS = 'S3_DOWNLOAD_RECORDS'
-STAT_DOWNLOADS = 'DOWNLOADS'
+STAT_S3_DOWNLOADS = 'S3_DOWNLOADS'
+STAT_S3_EARLIEST = 'S3_EARLIEST'
+STAT_S3_LATEST = 'S3_LATEST'
 
 
 S3_DATA_BUCKET = 'digitalcorpora'
@@ -122,6 +124,27 @@ UNKNOWN  = 'UNKNOWN'
 # The config used for all S3 operations
 config_unsigned = Config(connect_timeout=5, retries={'max_attempts': 4}, signature_version=UNSIGNED)
 config_signed   = Config(connect_timeout=5, retries={'max_attempts': 4})
+<<<<<<< HEAD
+
+
+################################################################
+### stats
+################################################################
+
+def stats_update_dtime(dtime):
+    if STAT_S3_EARLIEST not in stats:
+        stats[STAT_S3_EARLIEST] = dtime
+    if STAT_S3_LATEST not in stats:
+        stats[STAT_S3_LATEST] = dtime
+    stats[STAT_S3_EARLIEST] = min(stats[STAT_S3_EARLIEST], dtime)
+    stats[STAT_S3_LATEST] = max(stats[STAT_S3_LATEST], dtime)
+
+def print_statistics():
+    for (k,v) in stats.items():
+        print(k,v)
+
+=======
+>>>>>>> origin/main
 
 
 ################################################################
@@ -375,21 +398,15 @@ def insert_obj_into_db(auth, obj):
                                %s,%s,%s)
                         """,
                         (obj.key, obj.user_agent, obj.remote_ip, obj.dtime, obj.bytes_sent))
-    stats[STAT_DOWNLOADS] += 1
     logging.info("%s %s %s bytes=%d",obj.dtime,obj.key,obj.remote_ip,obj.bytes_sent)
 
 ## s3 logs (a collection of objects in an S3 bucket; each object can have 1 or more S3 logs.)
 def s3_logs_info(limit=sys.maxsize):
     """Report information regarding S3 logs that haven't been downloaded"""
-    earliest = None
-    latest   = None
-    count = 0
     for obj in s3_get_objects( Bucket=S3_LOG_BUCKET, Prefix='', limit=limit, Signed=True):
         stats[STAT_S3_OBJECTS] += 1
-        earliest = obj['LastModified'] if earliest is None else min(earliest,obj['LastModified'])
-        latest   = obj['LastModified'] if latest is None else max(earliest,obj['LastModified'])
-    print("Earliest:",earliest)
-    print("Latest:",latest)
+        stats_update_dtime(obj['LastModified'])
+    print_statistics()
 
 # pylint: disable=R0911
 def validate_obj(auth, obj):
@@ -483,6 +500,7 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, Key):
         stats[STAT_S3_RECORDS] += 1
         if what==DOWNLOAD:
             stats[STAT_S3_DOWNLOAD_RECORDS] += 1
+            stats_update_dtime(obj.dtime)
             insert_obj_into_db(auth, obj)
             s3_logfile_lock.acquire()
             s3_logfile.write(line)
