@@ -124,6 +124,7 @@ UNKNOWN  = 'UNKNOWN'
 # The config used for all S3 operations
 config_unsigned = Config(connect_timeout=5, retries={'max_attempts': 4}, signature_version=UNSIGNED)
 config_signed   = Config(connect_timeout=5, retries={'max_attempts': 4})
+<<<<<<< HEAD
 
 
 ################################################################
@@ -142,6 +143,8 @@ def print_statistics():
     for (k,v) in stats.items():
         print(k,v)
 
+=======
+>>>>>>> origin/main
 
 
 ################################################################
@@ -636,6 +639,10 @@ def db_download_summarize( auth, first, last):
         db_summarize_day(auth, first)
         first += datetime.timedelta(days=1)
 
+
+def print_statistics():
+    for (k,v) in stats.items():
+        print(k,v)
 
 def db_gc( auth, url ):
     db = dbfile.DBMySQL( auth )
