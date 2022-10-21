@@ -2,6 +2,15 @@
 # digitalcorpora-stats
 - Designing to parse Apache logfiles for digitalcorpora.org
 
+# Getting going on a new VM
+```
+sudo yum install git emacs && git clone --recursive git@github.com:digitalcorpora/digitalcorpora-stats.git
+cd digitalcorpora-stats
+make install-dependencies
+make check
+```
+
+
 # Design
 - Run as a daemon/system service so whenever a new log is created, it is automatically parsed, using something like a watch folder.
 - Options will be set using a config file

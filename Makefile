@@ -1,5 +1,7 @@
+PYTHON_DIR=python
+
 pylint:
-	(cd python; make pylint)
+	(cd $(PYTHON_DIR); make pylint)
 
 install-dependencies:
 	python3 -m pip install --user --upgrade pip
@@ -12,8 +14,8 @@ configure-aws:
 	make install-dependencies
 
 coverage:
-	(cd python; python3 -m pytest --debug -v --cov=. --cov-report=xml tests; cp coverage.xml ..)
+	(cd $(PYTHON_DIR); python3 -m pytest --debug -v --cov=. --cov-report=xml tests; cp coverage.xml ..)
 
 
 pytest:
-	(cd python; make pytest)
+	(cd $(PYTHON_DIR); make pytest)
