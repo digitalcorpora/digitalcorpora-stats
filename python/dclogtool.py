@@ -37,6 +37,8 @@ from ctools import dbfile
 from ctools import clogging
 import ctools.lock
 
+import botocore.exceptions
+
 stats = defaultdict(int)
 STAT_S3_OBJECTS = 'S3_OBJECTS'
 STAT_S3_RECORDS = 'S3_RECORDS'
@@ -124,7 +126,6 @@ UNKNOWN  = 'UNKNOWN'
 # The config used for all S3 operations
 config_unsigned = Config(connect_timeout=5, retries={'max_attempts': 4}, signature_version=UNSIGNED)
 config_signed   = Config(connect_timeout=5, retries={'max_attempts': 4})
-<<<<<<< HEAD
 
 
 ################################################################
@@ -143,8 +144,6 @@ def print_statistics():
     for (k,v) in stats.items():
         print(k,v)
 
-=======
->>>>>>> origin/main
 
 
 ################################################################
@@ -246,7 +245,11 @@ def import_s3obj(obj):
             raise e
 
     # Get a handle to the s3 object
-    o2 = s3_get_object(Bucket = obj['Bucket'], Key=obj['Key'], Signed=True)
+    try:
+        o2 = s3_get_object(Bucket = obj['Bucket'], Key=obj['Key'], Signed=True)
+    except botocore.exceptions.ParamValidationError as e:
+        logging.error("Bucket=%s Key=%s",obj['Bucket'],obj['Key'])
+        raise
 
     """
     Typical o2:
@@ -310,7 +313,7 @@ def hash_s3prefix(auth, Prefix, threads=40):
     # We no longer require that mtime hasn't been changed because of timezone problems.
     # We need to use our own auth because we don't want it activated
     auth2 = copy.deepcopy(auth)
-    lk = p.path[1:] +"%"
+    lk = p.path +"%"
     rows = dbfile.DBMySQL.csfr(auth2,
                                """select s3key,etag,mtime from downloadable
                                WHERE s3key LIKE %s AND (sha2_256 IS NOT NULL) AND (sha3_256 IS NOT NULL)
@@ -322,20 +325,19 @@ def hash_s3prefix(auth, Prefix, threads=40):
 
     # This is surprisingly fast
     to_hash = []
-    for obj in s3_get_objects(S3_DATA_BUCKET, Prefix=Prefix, Signed=False):
+    for obj in s3_get_objects(Bucket=S3_DATA_BUCKET, Prefix=Prefix, Signed=False):
         s3key = obj['Key']
         try:
             t1 = obj['LastModified'].replace(tzinfo=None)
             t2 = hashed[s3key]['mtime']
-            print(s3key,t1,t2)
             # for now ignore t1==t2 because our time was in local time, and the timezone changed
             # if obj['ETag']==hashed[s3key]['ETag'] and t1==t2:
             if obj['ETag']==hashed[s3key]['ETag']:
-                logging.debug('Already hashed in database: %s', obj['Key'])
+                logging.debug('Already hashed in database: %s  ETag: %s', obj['Key'], obj['ETag'])
                 already_hashed +=1
-                if (t1!=t2) and REQUIRE_TIME_MATCH:
-                    logging.info("set mtime in database for %s from %s to %s for etag %s",
-                                 obj['Key'], t2, t1, obj['ETag'])
+                if t1!=t2:
+                    logging.info("Updating mtime in database for %s etag %s from %s --> %s ",
+                                 obj['Key'], obj['ETag'], t2, t1)
                     dbfile.DBMySQL.csfr(auth2,
                                         "UPDATE downloadable SET mtime=%s WHERE s3key=%s AND etag=%s",
                                         (t1, obj['Key'], obj['ETag']))
@@ -344,8 +346,9 @@ def hash_s3prefix(auth, Prefix, threads=40):
         except KeyError as e:
             pass
 
+        logging.info("Need to hash: %s %s",obj['Key'],obj['ETag'])
         obj['auth']   = auth
-        obj['Bucket'] = p.netloc
+        obj['Bucket'] = p.netloc if p.netloc else S3_DATA_BUCKET
         to_hash.append(obj)
 
     # Now hash those that need to be hashed
