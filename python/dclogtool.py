@@ -126,6 +126,27 @@ UNKNOWN  = 'UNKNOWN'
 # The config used for all S3 operations
 config_unsigned = Config(connect_timeout=5, retries={'max_attempts': 4}, signature_version=UNSIGNED)
 config_signed   = Config(connect_timeout=5, retries={'max_attempts': 4})
+<<<<<<< HEAD
+
+
+################################################################
+### stats
+################################################################
+
+def stats_update_dtime(dtime):
+    if STAT_S3_EARLIEST not in stats:
+        stats[STAT_S3_EARLIEST] = dtime
+    if STAT_S3_LATEST not in stats:
+        stats[STAT_S3_LATEST] = dtime
+    stats[STAT_S3_EARLIEST] = min(stats[STAT_S3_EARLIEST], dtime)
+    stats[STAT_S3_LATEST] = max(stats[STAT_S3_LATEST], dtime)
+
+def print_statistics():
+    for (k,v) in stats.items():
+        print(k,v)
+
+=======
+>>>>>>> origin/main
 
 
 ################################################################
