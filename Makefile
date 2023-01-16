@@ -1,5 +1,7 @@
+PYTHON_DIR=python
+
 pylint:
-	(cd python; make pylint)
+	(cd $(PYTHON_DIR); make pylint)
 
 dreamhost-download-s3logs:
 	(source $$HOME/dbwriter.bash; cd python; python3 dclogtool.py --s3_logs_download_ingest_and_save --env --prod  -j10)
@@ -17,7 +19,7 @@ configure-aws:
 	make install-dependencies
 
 coverage:
-	(cd python; python3 -m pytest --debug -v --cov=. --cov-report=xml tests; cp coverage.xml ..)
+	(cd $(PYTHON_DIR); python3 -m pytest --debug -v --cov=. --cov-report=xml tests; cp coverage.xml ..)
 
 pytest:
-	(cd python; make pytest)
+	(cd $(PYTHON_DIR); make pytest)
