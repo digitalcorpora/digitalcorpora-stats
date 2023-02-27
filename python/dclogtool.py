@@ -19,6 +19,7 @@ import threading
 import time
 import urllib.parse
 import gzip
+import signal
 from collections import defaultdict
 
 import boto3
