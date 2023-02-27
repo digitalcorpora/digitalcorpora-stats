@@ -416,20 +416,9 @@ def validate_obj(auth, obj):
     if obj.operation in GET_OBJECTS:
         if obj.http_status in [200,206]:
             return DOWNLOAD
-        elif obj.http_status in [400,404]:
-            # bad URL
+        elif obj.http_status in range(300,400):
             return BAD
-        elif obj.http_status in [416]:
-            # Bad Range
-            return BAD
-        elif obj.http_status in [304]:
-            # not modified
-            return BAD
-        elif obj.http_status in [301]:
-            # moved permanently?
-            return BAD
-        elif obj.http_status in [304]:
-            # not modified
+        elif obj.http_status in range(400,500):
             return BAD
         elif obj.http_status in [500]:
             # internal error
@@ -439,7 +428,7 @@ def validate_obj(auth, obj):
             logging.warning("will not ingest HTTP status %d: %s",obj.http_status, obj.line)
             return BAD
     elif obj.operation in WRITE_OBJECTS:
-        if obj.http_status//100 in [4]:
+        if obj.http_status in range(400,500):
             # Write objects blocked.
             return BLOCKED
         logging.warning("upload: %s %s %s from %s (status: %s)", obj.dtime, obj.operation, obj.key, obj.remote_ip, obj.http_status)
