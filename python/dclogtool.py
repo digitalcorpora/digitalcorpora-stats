@@ -57,6 +57,7 @@ WRITE_OBJECTS = set([ 'REST.PUT.PART',
                       'REST.POST.OBJECT',
                       'REST.POST.UPLOAD',
                       'REST.POST.UPLOADS',
+                      'REST.COPY.PART'
                      ])
 
 DEL_OBJECTS = set(['REST.DELETE.OBJECT',
@@ -124,7 +125,6 @@ UNKNOWN  = 'UNKNOWN'
 # The config used for all S3 operations
 config_unsigned = Config(connect_timeout=5, retries={'max_attempts': 4}, signature_version=UNSIGNED)
 config_signed   = Config(connect_timeout=5, retries={'max_attempts': 4})
-<<<<<<< HEAD
 
 
 ################################################################
@@ -141,10 +141,8 @@ def stats_update_dtime(dtime):
 
 def print_statistics():
     for (k,v) in stats.items():
-        print(k,v)
+        logging.info("%s %s",k,v)
 
-=======
->>>>>>> origin/main
 
 
 ################################################################
@@ -322,7 +320,7 @@ def hash_s3prefix(auth, Prefix, threads=40):
 
     # This is surprisingly fast
     to_hash = []
-    for obj in s3_get_objects(S3_DATA_BUCKET, Prefix=Prefix, Signed=False):
+    for obj in s3_get_objects(Bucket=S3_DATA_BUCKET, Prefix=Prefix, Signed=False):
         s3key = obj['Key']
         try:
             t1 = obj['LastModified'].replace(tzinfo=None)
@@ -482,7 +480,7 @@ def logfile_ingest(auth, f, factory):
             latest = None
     print("Ingest Status:")
     for (k,v) in sums.items():
-        print(k,v)
+        logging.info("%s %s",k,v)
 
 def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, Key):
     """Given an s3 key, ingest each of its records (there can be many), and them to the databse, and then delete it.
@@ -639,10 +637,6 @@ def db_download_summarize( auth, first, last):
         db_summarize_day(auth, first)
         first += datetime.timedelta(days=1)
 
-
-def print_statistics():
-    for (k,v) in stats.items():
-        print(k,v)
 
 def db_gc( auth, url ):
     db = dbfile.DBMySQL( auth )
