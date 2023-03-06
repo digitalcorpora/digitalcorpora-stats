@@ -19,9 +19,12 @@ import threading
 import time
 import urllib.parse
 import gzip
+import signal
 from collections import defaultdict
 
 import boto3
+import botocore
+import botocore.exceptions
 import pymysql
 
 from botocore import UNSIGNED
@@ -59,6 +62,7 @@ WRITE_OBJECTS = set([ 'REST.PUT.PART',
                       'REST.POST.OBJECT',
                       'REST.POST.UPLOAD',
                       'REST.POST.UPLOADS',
+                      'REST.COPY.PART'
                      ])
 
 DEL_OBJECTS = set(['REST.DELETE.OBJECT',
@@ -126,7 +130,6 @@ UNKNOWN  = 'UNKNOWN'
 # The config used for all S3 operations
 config_unsigned = Config(connect_timeout=5, retries={'max_attempts': 4}, signature_version=UNSIGNED)
 config_signed   = Config(connect_timeout=5, retries={'max_attempts': 4})
-<<<<<<< HEAD
 
 
 ################################################################
@@ -143,10 +146,8 @@ def stats_update_dtime(dtime):
 
 def print_statistics():
     for (k,v) in stats.items():
-        print(k,v)
+        logging.info("%s %s",k,v)
 
-=======
->>>>>>> origin/main
 
 
 ################################################################
@@ -183,7 +184,11 @@ def s3_get_object(*, Bucket=None, Key=None, url=None, Signed = True):
     assert Key is not None
 
     s3client  = boto3.client('s3', config = config_signed if Signed else config_unsigned)
-    return s3client.get_object(Bucket=Bucket, Key=Key)
+    try:
+        return s3client.get_object(Bucket=Bucket, Key=Key)
+    except botocore.exceptions.ParamValidationError:
+        logging.error("Bucket=%s Key=%s",Bucket,Key)
+        raise
 
 
 def s3_get_objects(*, Bucket=None, Prefix=None, url=None, limit=sys.maxsize, Signed=True):
@@ -442,20 +447,9 @@ def validate_obj(auth, obj):
     if obj.operation in GET_OBJECTS:
         if obj.http_status in [200,206]:
             return DOWNLOAD
-        elif obj.http_status in [400,404]:
-            # bad URL
+        elif obj.http_status in range(300,400):
             return BAD
-        elif obj.http_status in [416]:
-            # Bad Range
-            return BAD
-        elif obj.http_status in [304]:
-            # not modified
-            return BAD
-        elif obj.http_status in [301]:
-            # moved permanently?
-            return BAD
-        elif obj.http_status in [304]:
-            # not modified
+        elif obj.http_status in range(400,500):
             return BAD
         elif obj.http_status in [500]:
             # internal error
@@ -465,7 +459,7 @@ def validate_obj(auth, obj):
             logging.warning("will not ingest HTTP status %d: %s",obj.http_status, obj.line)
             return BAD
     elif obj.operation in WRITE_OBJECTS:
-        if obj.http_status//100 in [4]:
+        if obj.http_status in range(400,500):
             # Write objects blocked.
             return BLOCKED
         logging.warning("upload: %s %s %s from %s (status: %s)", obj.dtime, obj.operation, obj.key, obj.remote_ip, obj.http_status)
@@ -506,7 +500,7 @@ def logfile_ingest(auth, f, factory):
             latest = None
     print("Ingest Status:")
     for (k,v) in sums.items():
-        print(k,v)
+        logging.info("%s %s",k,v)
 
 def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, Key):
     """Given an s3 key, ingest each of its records (there can be many), and them to the databse, and then delete it.
@@ -664,9 +658,12 @@ def db_download_summarize( auth, first, last):
         first += datetime.timedelta(days=1)
 
 
-def print_statistics():
-    for (k,v) in stats.items():
-        print(k,v)
+class TimeoutException(Exception):
+    pass
+
+def timeout_handler(num, stack):
+    logging.error("TimeoutException")
+    raise TimeoutException()
 
 def db_gc( auth, url ):
     db = dbfile.DBMySQL( auth )
@@ -745,6 +742,7 @@ if __name__ == "__main__":
     parser.add_argument("--first", help="first date for summarizaiton")
     parser.add_argument("--last", help="last date for summarizaiton")
     parser.add_argument("--year", help="go from Jan 1 to Dec. 31 of this year",type=int)
+    parser.add_argument("--timeout", default=3500, type=int, help="Timeout in seconds")
 
     # Tell me how to authenticate ---
     g = parser.add_mutually_exclusive_group(required=True)
@@ -813,37 +811,44 @@ if __name__ == "__main__":
     ctools.lock.lock_script()
 
     # Do what we are supposed to do
-    if args.apache_logfile_ingest:
-        with logfile_opener(args.apache_logfile_ingest) as f:
-            logfile_ingest(auth, f, weblog.weblog.Weblog)
-    elif args.s3_logfile_ingest:
-        with logfile_opener(args.s3_logfile_ingest) as f:
-            logfile_ingest( auth, f, weblog.weblog.S3Log)
-    elif args.hash_s3prefix:
-        hash_s3prefix(auth, args.hash_s3prefix, threads=args.threads)
-    elif args.s3_logs_download_ingest_and_save:
-        try:
-            s3_logs_download_ingest_and_save(auth, args.threads, args.limit)
-        except KeyboardInterrupt as e:
-            print(e)
-        print_statistics()
-    elif args.s3_logs_info:
-        s3_logs_info(args.limit)
-    elif args.copy:
-        db_copy( auth )
-    elif args.gc:
-        db_gc( auth, "s3://" + D3_DATA_BUCKET)
-    elif args.db_stats:
-        db_stats( auth )
-    elif args.download_summarize:
-        if args.first==None:
-            first = dbfile.DBMySQL.csfr(auth, "select date(dtime) from downloads where summary=0 order by dtime limit 1")[0][0]
+    signal.signal(signal.SIGALRM,timeout_handler)
+    signal.alarm(args.timeout)
+    try:
+        if args.apache_logfile_ingest:
+            with logfile_opener(args.apache_logfile_ingest) as f:
+                logfile_ingest(auth, f, weblog.weblog.Weblog)
+        elif args.s3_logfile_ingest:
+            with logfile_opener(args.s3_logfile_ingest) as f:
+                logfile_ingest( auth, f, weblog.weblog.S3Log)
+        elif args.hash_s3prefix:
+            hash_s3prefix(auth, args.hash_s3prefix, threads=args.threads)
+        elif args.s3_logs_download_ingest_and_save:
+            try:
+                s3_logs_download_ingest_and_save(auth, args.threads, args.limit)
+            except KeyboardInterrupt as e:
+                print(e)
+            print_statistics()
+        elif args.s3_logs_info:
+            s3_logs_info(args.limit)
+        elif args.copy:
+            db_copy( auth )
+        elif args.gc:
+            db_gc( auth, "s3://" + D3_DATA_BUCKET)
+        elif args.db_stats:
+            db_stats( auth )
+        elif args.download_summarize:
+            if args.first==None:
+                first = dbfile.DBMySQL.csfr(auth, "select date(dtime) from downloads where summary=0 order by dtime limit 1")[0][0]
+            else:
+                first = datetime.datetime.strptime(args.first, "%Y-%m-%d")
+            if args.last==None:
+                last = dbfile.DBMySQL.csfr(auth, "select date(dtime) from downloads where summary=0 order by dtime desc limit 1")[0][0]
+            else:
+                last = datetime.datetime.strptime(args.last, "%Y-%m-%d")
+            db_download_summarize(auth, first, last)
         else:
-            first = datetime.datetime.strptime(args.first, "%Y-%m-%d")
-        if args.last==None:
-            last = dbfile.DBMySQL.csfr(auth, "select date(dtime) from downloads where summary=0 order by dtime desc limit 1")[0][0]
-        else:
-            last = datetime.datetime.strptime(args.last, "%Y-%m-%d")
-        db_download_summarize(auth, first, last)
-    else:
-        raise RuntimeError("Unknown action")
+            raise RuntimeError("Unknown action")
+    except TimeoutException as e:
+        pass
+    finally:
+        signal.alarm(0)

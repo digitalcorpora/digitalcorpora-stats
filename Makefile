@@ -6,6 +6,9 @@ pylint:
 dreamhost-download-s3logs:
 	(source $$HOME/dbwriter.bash; cd python; python3 dclogtool.py --s3_logs_download_ingest_and_save --env --prod  -j10)
 
+backup-sql:
+	(source $$HOME/dbwriter.bash; dbdump | gzip -9 > $$HOME/dcstats-dump.$$(date -I).gz)
+
 check:
 	make pytest
 
