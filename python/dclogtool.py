@@ -397,7 +397,7 @@ def hash_s3prefix(auth, Prefix, threads=40):
 seen_dates = set()
 ingested_s3key = set()
 ingested_user_agent = set()
-def insert_obj_into_db(auth, obj):
+def insert_logfile_obj_into_db(auth, obj):
     """ First make sure that it's in downloads and get its ID.
     Note that the downloads are tracked by key, even though the object identified by the key may change.
     This is not very efficient, as it requires (on average) two aborted inserts due to duplicate keys and then an insert with two subselects per object.
@@ -427,7 +427,7 @@ def insert_obj_into_db(auth, obj):
                                %s,%s,%s)
                         """,
                         (obj.key, obj.user_agent, obj.remote_ip, obj.dtime, obj.bytes_sent))
-    logging.info("%s %s %s bytes=%d",obj.dtime,obj.key,obj.remote_ip,obj.bytes_sent)
+    logging.info("%s %s %s bytes_sent=%s",obj.dtime,obj.key,obj.remote_ip, obj.bytes_sent)
 
 ## s3 logs (a collection of objects in an S3 bucket; each object can have 1 or more S3 logs.)
 def s3_logs_info(limit=sys.maxsize):
@@ -490,7 +490,7 @@ def logfile_ingest(auth, f, factory):
         obj  = factory(line)
         what = validate_obj(auth, obj)
         if what==DOWNLOAD:
-            insert_obj_into_db(auth, obj)
+            insert_logfile_obj_into_db(auth, obj)
         sums[what] += 1
         earliest = obj.dtime if earliest is None else min(earliest,obj.dtime)
         latest = obj.dtime if latest is None else max(latest,obj.dtime)
@@ -519,7 +519,7 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, Key):
         if what==DOWNLOAD:
             stats[STAT_S3_DOWNLOAD_RECORDS] += 1
             stats_update_dtime(obj.dtime)
-            insert_obj_into_db(auth, obj)
+            insert_logfile_obj_into_db(auth, obj)
             s3_logfile_lock.acquire()
             s3_logfile.write(line)
             s3_logfile_lock.release()
@@ -619,7 +619,7 @@ def db_copy( auth ):
                                              'object_size': object_size,
                                              'remote_ip':remote_ip,
                                              'time':dtime})
-            insert_obj_into_db( auth, obj)
+            insert_logfile_obj_into_db( auth, obj)
             print("Added",s3key,remote_ip,dtime)
     print("total:",count)
 
