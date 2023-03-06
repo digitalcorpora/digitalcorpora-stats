@@ -23,6 +23,8 @@ import signal
 from collections import defaultdict
 
 import boto3
+import botocore
+import botocore.exceptions
 import pymysql
 
 from botocore import UNSIGNED
@@ -162,7 +164,11 @@ def s3_get_object(*, Bucket=None, Key=None, url=None, Signed = True):
     assert Key is not None
 
     s3client  = boto3.client('s3', config = config_signed if Signed else config_unsigned)
-    return s3client.get_object(Bucket=Bucket, Key=Key)
+    try:
+        return s3client.get_object(Bucket=Bucket, Key=Key)
+    except botocore.exceptions.ParamValidationError:
+        logging.error("Bucket=%s Key=%s",Bucket,Key)
+        raise
 
 
 def s3_get_objects(*, Bucket=None, Prefix=None, url=None, limit=sys.maxsize, Signed=True):
@@ -304,6 +310,7 @@ REQUIRE_TIME_MATCH = False
 def hash_s3prefix(auth, Prefix, threads=40):
     """Find all of the objects with an Prefix that require hashing, then download and hash them all in parallel"""
     p = urllib.parse.urlparse(Prefix)
+    bucket = p.netloc if p.netloc else S3_DATA_BUCKET
 
     # First, get all of the keys and etags from the database that match this prefix
     # We no longer require that mtime hasn't been changed because of timezone problems.
@@ -344,7 +351,7 @@ def hash_s3prefix(auth, Prefix, threads=40):
             pass
 
         obj['auth']   = auth
-        obj['Bucket'] = p.netloc
+        obj['Bucket'] = bucket
         to_hash.append(obj)
 
     # Now hash those that need to be hashed
@@ -712,7 +719,7 @@ if __name__ == "__main__":
     parser.add_argument("--first", help="first date for summarizaiton")
     parser.add_argument("--last", help="last date for summarizaiton")
     parser.add_argument("--year", help="go from Jan 1 to Dec. 31 of this year",type=int)
-    parser.add_argument("--timeout", default=3500, type=int)
+    parser.add_argument("--timeout", default=3500, type=int, help="Timeout in seconds")
 
     # Tell me how to authenticate ---
     g = parser.add_mutually_exclusive_group(required=True)
