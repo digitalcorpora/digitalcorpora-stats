@@ -29,18 +29,17 @@ import pymysql
 
 from botocore import UNSIGNED
 from botocore.client import Config
+import botocore.exceptions
 
 import weblog.schema
 import weblog.weblog
 
 import aws_secrets
-# import ctools.dbfile as dbfile
-# import ctools.clogging as clogging
+
 from ctools import dbfile
 from ctools import clogging
 import ctools.lock
 
-import botocore.exceptions
 
 stats = defaultdict(int)
 STAT_S3_OBJECTS = 'S3_OBJECTS'
@@ -147,24 +146,6 @@ def stats_update_dtime(dtime):
 def print_statistics():
     for (k,v) in stats.items():
         logging.info("%s %s",k,v)
-
-
-
-################################################################
-### stats
-################################################################
-
-def stats_update_dtime(dtime):
-    if STAT_S3_EARLIEST not in stats:
-        stats[STAT_S3_EARLIEST] = dtime
-    if STAT_S3_LATEST not in stats:
-        stats[STAT_S3_LATEST] = dtime
-    stats[STAT_S3_EARLIEST] = min(stats[STAT_S3_EARLIEST], dtime)
-    stats[STAT_S3_LATEST] = max(stats[STAT_S3_LATEST], dtime)
-
-def print_statistics():
-    for (k,v) in stats.items():
-        print(k,v)
 
 
 
