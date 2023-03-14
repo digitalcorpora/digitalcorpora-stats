@@ -42,6 +42,8 @@ from ctools import dbfile
 from ctools import clogging
 import ctools.lock
 
+MULTIPROCESSING = False
+DEFAULT_THREADS = 20   # Good for a microvm
 
 stats = defaultdict(int)
 STAT_S3_OBJECTS = 'S3_OBJECTS'
@@ -384,7 +386,6 @@ def hash_s3prefix(auth, Prefix, *, threads=40, timeout=DEFAULT_TIMEOUT):
         return
 
     # This is the multiprocessing implementation
-    MULTIPROCESSING = False
     if MULTIPROCESSING:
         with multiprocessing.Pool(threads) as p:
             p.map(import_s3obj, to_hash)
@@ -744,7 +745,7 @@ if __name__ == "__main__":
     parser.add_argument("--wipe", help="Wipe database and load a new schema", action='store_true')
     parser.add_argument("--debug", action='store_true')
     parser.add_argument("--verbose", action='store_true')
-    parser.add_argument("--threads", "-j", type=int, default=1)
+    parser.add_argument("--threads", "-j", type=int, default=DEFAULT_THREADS)
     parser.add_argument("--limit", type=int, default=sys.maxsize,
                         help="Limit number of imports to this number when reading from text files or s3 objects when reading from s3")
 
