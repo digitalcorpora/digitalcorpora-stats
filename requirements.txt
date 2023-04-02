@@ -1,3 +1,4 @@
+cryptography
 boto3
 python-dateutil
 pymysql

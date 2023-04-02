@@ -3,9 +3,14 @@
 Make sure that the schema works.
 """
 
+import os
+import sys
+
+from os.path import abspath,dirname,basename
+sys.path.append( dirname( abspath( __file__ )))
+
 import pytest
 import pymysql
-import os
 
 from weblog.weblog import Weblog
 
