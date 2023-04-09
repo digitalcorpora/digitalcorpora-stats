@@ -5,8 +5,8 @@ You can even run it in a specially-created VM.
 
 # Getting going on a new VM
 ```
-sudo yum install git emacs && git clone --recursive git@github.com:digitalcorpo\
-ra/digitalcorpora-stats.git
+sudo yum install git emacs && git clone --recursive git@github.com:digitalcorpora/digitalcorpora-stats.git
+
 cd digitalcorpora-stats
 make install-dependencies
 make check
@@ -21,6 +21,7 @@ make check
   - Files that no longer exist. They are GCed from the database if they were never downloaded, and they are marked no longer present if they were downloaded.
 
 ## Design
+
 - Run as a daemon/system service so whenever a new log is created, it is automatically parsed, using something like a watch folder.
 - Reads database credentials from home directory.
 - Options will be set using a config file

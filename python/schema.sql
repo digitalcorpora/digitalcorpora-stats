@@ -1,4 +1,4 @@
--- MySQL dump 10.13  Distrib 5.7.39, for Linux (x86_64)
+-- MySQL dump 10.13  Distrib 5.7.40, for Linux (x86_64)
 --
 -- Host: mysql.digitalcorpora.org    Database: dcstats
 -- ------------------------------------------------------
@@ -40,7 +40,7 @@ CREATE TABLE `downloadable` (
   KEY `etag` (`etag`),
   KEY `sha2_256` (`sha2_256`),
   KEY `sha3_256` (`sha3_256`)
-) ENGINE=InnoDB AUTO_INCREMENT=7618242 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=10667851 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -56,16 +56,20 @@ CREATE TABLE `downloads` (
   `user_agent_id` int DEFAULT NULL,
   `remote_ipaddr` varchar(64) DEFAULT NULL,
   `dtime` datetime NOT NULL,
-  `bytes_sent` int DEFAULT NULL,
+  `bytes_sent` bigint DEFAULT NULL,
+  `summary` tinyint(1) DEFAULT '0',
   PRIMARY KEY (`id`),
   KEY `did` (`did`),
   KEY `ipaddr` (`remote_ipaddr`),
   KEY `dtime` (`dtime`),
   KEY `bytes_sent` (`bytes_sent`),
   KEY `user_agent_id` (`user_agent_id`),
+  KEY `summary` (`summary`),
+  KEY `date1` (`dtime`,`summary`),
+  KEY `date2` (`summary`,`dtime`),
   CONSTRAINT `downloads_ibfk_1` FOREIGN KEY (`did`) REFERENCES `downloadable` (`id`),
   CONSTRAINT `downloads_ibfk_2` FOREIGN KEY (`user_agent_id`) REFERENCES `user_agents` (`id`)
-) ENGINE=InnoDB AUTO_INCREMENT=9481657 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=24450087 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -79,8 +83,8 @@ CREATE TABLE `user_agents` (
   `id` int NOT NULL AUTO_INCREMENT,
   `user_agent` varchar(128) DEFAULT NULL,
   PRIMARY KEY (`id`),
-  KEY `user_agent` (`user_agent`)
-) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+  UNIQUE KEY `user_agent` (`user_agent`)
+) ENGINE=InnoDB AUTO_INCREMENT=2858523 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
@@ -92,4 +96,4 @@ CREATE TABLE `user_agents` (
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2022-10-01 20:37:23
+-- Dump completed on 2023-01-15  5:43:50
