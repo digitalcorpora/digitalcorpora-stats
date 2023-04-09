@@ -162,7 +162,6 @@ def print_statistics():
 ### Low-level routines for working with S3
 ################################################################
 
-
 def s3_get_object(*, Bucket=None, Key=None, url=None, Signed = True):
     logging.debug("Bucket=%s Key=%s url=%s Signed=%s",Bucket,Key,url,Signed)
     if url:
@@ -466,6 +465,20 @@ def s3_logs_info(limit=sys.maxsize):
         stats_update_dtime(obj['LastModified'])
     print_statistics()
 
+## s3 logs (a collection of objects in an S3 bucket; each object can have 1 or more S3 logs.)
+def s3_logs_info(limit=sys.maxsize):
+    """Report information regarding S3 logs that haven't been downloaded"""
+    earliest = None
+    latest   = None
+    count = 0
+    for obj in s3_get_objects('', limit=limit):
+        count += 1
+        earliest = obj['LastModified'] if earliest is None else min(earliest,obj['LastModified'])
+        latest   = obj['LastModified'] if latest is None else max(earliest,obj['LastModified'])
+    print("Count:",count)
+    print("Earliest:",earliest)
+    print("Latest:",latest)
+
 # pylint: disable=R0911
 def validate_obj(auth, obj):
     """Write a logfile object to the database"""
@@ -676,7 +689,7 @@ def db_summarize_day( auth, day):
     print(day)
     next_day = day + datetime.timedelta(days=1)
     cmd = ("INSERT INTO downloads (did, remote_ipaddr, user_agent_id, dtime, bytes_sent, summary) "
-           "SELECT did, remote_ipaddr, user_agent_id, MIN(dtime), SUM(bytes_sent), 1 "
+           "SELECT did, remote_ipaddr, user_agent_id, DATE(dtime), SUM(bytes_sent), 1 "
            "FROM downloads "
            "WHERE dtime>=%s AND dtime<%s AND summary=0 GROUP BY did, remote_ipaddr, user_agent_id, DATE(dtime)")
     dbfile.DBMySQL.csfr(auth, cmd, (day, next_day))
