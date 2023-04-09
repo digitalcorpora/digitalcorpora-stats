@@ -1,0 +1,1 @@
+stats/digitalcorpora_configuration1.csv

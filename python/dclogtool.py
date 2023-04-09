@@ -77,6 +77,7 @@ GET_OBJECTS = set([ 'REST.GET.OBJECT',
 MISC_OBJECTS = set([
     'REST.COPY.OBJECT',
     'REST.COPY.OBJECT_GET',
+    'REST.COPY.NOTIFICATION',
     'REST.GET.ACCELERATE',
     'REST.GET.ACL',
     'REST.GET.ANALYTICS',
@@ -107,6 +108,8 @@ MISC_OBJECTS = set([
     'REST.HEAD.OBJECT',
     'REST.OPTIONS.PREFLIGHT',
     'REST.POST.BUCKET',
+    'REST.POST.NOTIFICATION',
+    'REST.POST.TORRENT',
     'REST.PUT.BUCKETPOLICY',
     'REST.PUT.LOGGING_STATUS',
     'REST.PUT.METRICS',
@@ -130,6 +133,8 @@ UNKNOWN  = 'UNKNOWN'
 config_unsigned = Config(connect_timeout=5, retries={'max_attempts': 4}, signature_version=UNSIGNED)
 config_signed   = Config(connect_timeout=5, retries={'max_attempts': 4})
 
+
+ignore_keys = set()
 
 ################################################################
 ### stats
@@ -495,6 +500,8 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, Key):
     line_stream = codecs.getreader("utf-8")
     for line in line_stream(o2['Body']):
         obj = weblog.weblog.S3Log(line)
+        if obj.key in ignore_keys:
+            continue
         what = validate_obj(auth, obj)
         stats[STAT_S3_RECORDS] += 1
         if what==DOWNLOAD:
@@ -735,6 +742,8 @@ if __name__ == "__main__":
     g.add_argument("--prod", help="Use production database", action='store_true')
     g.add_argument("--test", help="Use test database", action='store_true')
 
+    parser.add_argument("--ignore_keys",help="path names to ignore")
+
     clogging.add_argument(parser)
     args = parser.parse_args()
     clogging.setup(args.loglevel,
@@ -755,6 +764,11 @@ if __name__ == "__main__":
         args.first=f"{args.year}-01-01"
         args.last =f"{args.year}-12-31"
 
+
+    if args.ignore_keys:
+        with open(args.ignore_keys,"r") as f:
+            for line in f:
+                ignore_keys.add(line.strip())
 
     database = "dcstats_test" if not args.prod else 'dcstats'
     # Select the authentication approach
