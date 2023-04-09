@@ -20,6 +20,8 @@ import time
 import urllib.parse
 import gzip
 import signal
+import threading
+import queue
 from collections import defaultdict
 
 import boto3
@@ -40,6 +42,8 @@ from ctools import dbfile
 from ctools import clogging
 import ctools.lock
 
+MULTIPROCESSING = False
+DEFAULT_THREADS = 20   # Good for a microvm
 
 stats = defaultdict(int)
 STAT_S3_OBJECTS = 'S3_OBJECTS'
@@ -238,14 +242,20 @@ def import_s3obj(obj):
     :param obj: dictionary with s3 object information.
     """
 
+    # Reset timeout while hashing
+    #signal.alarm(obj['timeout'])
+
+    # Get the info
     auth   = obj['auth']
     s3key  = obj['Key']
+
+    logging.info("import_s3obj %s",s3key)
 
     # Make sure that this object is in the database.
     cmd  = "INSERT INTO downloadable (s3key,bytes,mtime,etag) VALUES (%s,%s,%s,%s)"
     vals = (s3key, obj['Size'], obj['LastModified'], obj['ETag'])
     try:
-        dbfile.DBMySQL.csfr(auth, cmd, vals)
+        dbfile.DBMySQL.csfr(auth, cmd, vals, nolog=[1062])
     except pymysql.err.IntegrityError as e:
         if e.args[0]==1062:
             # It already exists. If the ETag hasn't changed and we have both sha2_256 and sha3_256, just return
@@ -293,11 +303,14 @@ def import_s3obj(obj):
       'Body': <botocore.response.StreamingBody object at 0x7f0d5f98ca10>}
     """
     # Download and incrementally hash the object's body
+    logging.info("start hashing s3://%s/%s",obj['Bucket'],obj['Key'])
     t0       = time.time()
     body     = o2['Body']
     bytes_hashed = 0
+    last_notification = 0
     sha2_256 = hashlib.sha256()
     sha3_256 = hashlib.sha3_256()
+    M = 1_000_000
     while True:
         data = body.read(BUFSIZE)
         if len(data)==0:
@@ -305,6 +318,11 @@ def import_s3obj(obj):
         sha2_256.update(data)
         sha3_256.update(data)
         bytes_hashed += len(data)
+        if bytes_hashed > last_notification + 10_000_000:
+            p = bytes_hashed/obj['Size']
+            t = time.time() - t0
+            logging.info("%s bytes hashed: %dM out of %dM in %d seconds (%5.2f%%)",obj['Key'],bytes_hashed/M,obj['Size']/M,t,p*100.0)
+            last_notification = bytes_hashed
     assert bytes_hashed == o2['ContentLength']
     t1 = time.time()
 
@@ -317,8 +335,9 @@ def import_s3obj(obj):
 
 
 REQUIRE_TIME_MATCH = False
-def hash_s3prefix(auth, Prefix, threads=40):
+def hash_s3prefix(auth, Prefix, *, threads=40, timeout=DEFAULT_TIMEOUT):
     """Find all of the objects with an Prefix that require hashing, then download and hash them all in parallel"""
+    logging.info("hash_s3prefix %s",Prefix)
     p = urllib.parse.urlparse(Prefix)
 
     # First, get all of the keys and etags from the database that match this prefix
@@ -361,16 +380,40 @@ def hash_s3prefix(auth, Prefix, threads=40):
         logging.info("Need to hash: %s %s",obj['Key'],obj['ETag'])
         obj['auth']   = auth
         obj['Bucket'] = p.netloc if p.netloc else S3_DATA_BUCKET
+        obj['timeout'] = timeout
         to_hash.append(obj)
 
     # Now hash those that need to be hashed
-    logging.info("Objects to hash: %d  (already hashed: %d)", len(to_hash), already_hashed)
+    logging.info("Objects to hash: %d  (already hashed: %d). Threads=%s", len(to_hash), already_hashed, threads)
     if threads==1:
         for obj in to_hash:
             import_s3obj(obj)
-    else:
+        return
+
+    # This is the multiprocessing implementation
+    if MULTIPROCESSING:
         with multiprocessing.Pool(threads) as p:
             p.map(import_s3obj, to_hash)
+        return
+
+    # This is the threadpool implementation
+    q = queue.Queue()
+    def worker():
+        while True:
+            obj = q.get()
+            print(f'Working on {obj}')
+            import_s3obj(obj)
+            print(f'Finished {obj}')
+            q.task_done()
+    for i in range(threads):
+        threading.Thread(target=worker, daemon=True).start()
+    for obj in to_hash:
+        q.put(obj)
+    q.join()
+    print('All work completed')
+    return
+
+
 
 ################################################################
 ### logfile management routines
@@ -709,7 +752,7 @@ if __name__ == "__main__":
     parser.add_argument("--wipe", help="Wipe database and load a new schema", action='store_true')
     parser.add_argument("--debug", action='store_true')
     parser.add_argument("--verbose", action='store_true')
-    parser.add_argument("--threads", "-j", type=int, default=1)
+    parser.add_argument("--threads", "-j", type=int, default=DEFAULT_THREADS)
     parser.add_argument("--limit", type=int, default=sys.maxsize,
                         help="Limit number of imports to this number when reading from text files or s3 objects when reading from s3")
 
@@ -806,8 +849,8 @@ if __name__ == "__main__":
     ctools.lock.lock_script()
 
     # Do what we are supposed to do
-    signal.signal(signal.SIGALRM,timeout_handler)
-    signal.alarm(args.timeout)
+    #signal.signal(signal.SIGALRM,timeout_handler)
+    #signal.alarm(args.timeout)
     try:
         if args.apache_logfile_ingest:
             with logfile_opener(args.apache_logfile_ingest) as f:
@@ -816,7 +859,7 @@ if __name__ == "__main__":
             with logfile_opener(args.s3_logfile_ingest) as f:
                 logfile_ingest( auth, f, weblog.weblog.S3Log)
         elif args.hash_s3prefix:
-            hash_s3prefix(auth, args.hash_s3prefix, threads=args.threads)
+            hash_s3prefix(auth, args.hash_s3prefix, threads=args.threads, timeout=args.timeout)
         elif args.s3_logs_download_ingest_and_save:
             try:
                 s3_logs_download_ingest_and_save(auth, args.threads, args.limit)
