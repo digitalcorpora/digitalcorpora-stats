@@ -46,4 +46,8 @@ jobs:
           make coverage
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v1
+        uses: codecov/codecov-action@v3
+        with:
+          verbose: true
+          
+  
