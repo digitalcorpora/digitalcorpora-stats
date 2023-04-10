@@ -759,7 +759,7 @@ def db_gc( auth, url ):
     c.execute(cmd)
 
 
-if __name__ == "__main__":
+def setup_parser():
     import argparse
     parser = argparse.ArgumentParser(description='Import the Digital Corpora logs.',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -768,7 +768,7 @@ if __name__ == "__main__":
     parser.add_argument("--verbose", action='store_true')
     parser.add_argument("--threads", "-j", type=int, default=DEFAULT_THREADS)
     parser.add_argument("--limit", type=int, default=sys.maxsize,
-                        help="Limit number of imports to this number when reading from text files or s3 objects when reading from s3")
+                        help="Number of imports when reading from text files or s3 objects when reading from s3")
 
     # One of these options must be provided - tell me what to do
     g = parser.add_mutually_exclusive_group(required=True)
@@ -802,11 +802,14 @@ if __name__ == "__main__":
     parser.add_argument("--ignore_keys",help="path names to ignore")
 
     clogging.add_argument(parser)
+    return parser
+
+def main():
+    parser = setup_parser()
     args = parser.parse_args()
     clogging.setup(args.loglevel,
                    log_format=clogging.LOG_FORMAT.replace("%(message)s",
                                                           "%(thread)d %(message)s"))
-
     if args.verbose:
         logging.getLogger().setLevel(logging.INFO)
 
@@ -904,3 +907,6 @@ if __name__ == "__main__":
         pass
     finally:
         signal.alarm(0)
+
+if __name__=="__main__":
+    main()
