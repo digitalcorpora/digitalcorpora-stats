@@ -44,6 +44,7 @@ import ctools.lock
 
 MULTIPROCESSING = False
 DEFAULT_THREADS = 20   # Good for a microvm
+NOTIFICATION_SIZE = 100_000_000
 
 stats = defaultdict(int)
 STAT_S3_OBJECTS = 'S3_OBJECTS'
@@ -313,7 +314,7 @@ def import_s3obj(obj):
         sha2_256.update(data)
         sha3_256.update(data)
         bytes_hashed += len(data)
-        if bytes_hashed > last_notification + 10_000_000:
+        if bytes_hashed > last_notification + NOTIFICATION_SIZE:
             p = bytes_hashed/obj['Size']
             t = time.time() - t0
             logging.info("%s bytes hashed: %dM out of %dM in %d seconds (%5.2f%%)",obj['Key'],bytes_hashed/M,obj['Size']/M,t,p*100.0)
