@@ -82,6 +82,7 @@ GET_OBJECTS = set([ 'REST.GET.OBJECT',
 MISC_OBJECTS = set([
     'REST.COPY.OBJECT',
     'REST.COPY.OBJECT_GET',
+    'REST.COPY.NOTIFICATION',
     'REST.GET.ACCELERATE',
     'REST.GET.ACL',
     'REST.GET.ANALYTICS',
@@ -112,6 +113,8 @@ MISC_OBJECTS = set([
     'REST.HEAD.OBJECT',
     'REST.OPTIONS.PREFLIGHT',
     'REST.POST.BUCKET',
+    'REST.POST.NOTIFICATION',
+    'REST.POST.TORRENT',
     'REST.PUT.BUCKETPOLICY',
     'REST.PUT.LOGGING_STATUS',
     'REST.PUT.METRICS',
@@ -136,6 +139,8 @@ config_unsigned = Config(connect_timeout=5, retries={'max_attempts': 4}, signatu
 config_signed   = Config(connect_timeout=5, retries={'max_attempts': 4})
 
 
+ignore_keys = set()
+
 ################################################################
 ### stats
 ################################################################
@@ -157,7 +162,6 @@ def print_statistics():
 ################################################################
 ### Low-level routines for working with S3
 ################################################################
-
 
 def s3_get_object(*, Bucket=None, Key=None, url=None, Signed = True):
     logging.debug("Bucket=%s Key=%s url=%s Signed=%s",Bucket,Key,url,Signed)
@@ -462,6 +466,20 @@ def s3_logs_info(limit=sys.maxsize):
         stats_update_dtime(obj['LastModified'])
     print_statistics()
 
+## s3 logs (a collection of objects in an S3 bucket; each object can have 1 or more S3 logs.)
+def s3_logs_info(limit=sys.maxsize):
+    """Report information regarding S3 logs that haven't been downloaded"""
+    earliest = None
+    latest   = None
+    count = 0
+    for obj in s3_get_objects('', limit=limit):
+        count += 1
+        earliest = obj['LastModified'] if earliest is None else min(earliest,obj['LastModified'])
+        latest   = obj['LastModified'] if latest is None else max(earliest,obj['LastModified'])
+    print("Count:",count)
+    print("Earliest:",earliest)
+    print("Latest:",latest)
+
 # pylint: disable=R0911
 def validate_obj(auth, obj):
     """Write a logfile object to the database"""
@@ -539,6 +557,8 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, Key):
     line_stream = codecs.getreader("utf-8")
     for line in line_stream(o2['Body']):
         obj = weblog.weblog.S3Log(line)
+        if obj.key in ignore_keys:
+            continue
         what = validate_obj(auth, obj)
         stats[STAT_S3_RECORDS] += 1
         if what==DOWNLOAD:
@@ -670,7 +690,7 @@ def db_summarize_day( auth, day):
     print(day)
     next_day = day + datetime.timedelta(days=1)
     cmd = ("INSERT INTO downloads (did, remote_ipaddr, user_agent_id, dtime, bytes_sent, summary) "
-           "SELECT did, remote_ipaddr, user_agent_id, MIN(dtime), SUM(bytes_sent), 1 "
+           "SELECT did, remote_ipaddr, user_agent_id, DATE(dtime), SUM(bytes_sent), 1 "
            "FROM downloads "
            "WHERE dtime>=%s AND dtime<%s AND summary=0 GROUP BY did, remote_ipaddr, user_agent_id, DATE(dtime)")
     dbfile.DBMySQL.csfr(auth, cmd, (day, next_day))
@@ -779,6 +799,8 @@ if __name__ == "__main__":
     g.add_argument("--prod", help="Use production database", action='store_true')
     g.add_argument("--test", help="Use test database", action='store_true')
 
+    parser.add_argument("--ignore_keys",help="path names to ignore")
+
     clogging.add_argument(parser)
     args = parser.parse_args()
     clogging.setup(args.loglevel,
@@ -799,6 +821,11 @@ if __name__ == "__main__":
         args.first=f"{args.year}-01-01"
         args.last =f"{args.year}-12-31"
 
+
+    if args.ignore_keys:
+        with open(args.ignore_keys,"r") as f:
+            for line in f:
+                ignore_keys.add(line.strip())
 
     database = "dcstats_test" if not args.prod else 'dcstats'
     # Select the authentication approach
