@@ -42,3 +42,7 @@ def test_s3_get_objects():
             print("New object:",obj)
     # make sure we found at least two objects
     assert found > 2
+
+def test_setup_parser():
+    parser = dclogtool.setup_parser()
+    assert parser is not None
