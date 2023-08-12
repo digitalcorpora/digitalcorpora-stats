@@ -499,7 +499,7 @@ def validate_obj(auth, obj):
             return BAD
         else:
             # Log that we didn't ingest something, but throw it away
-            logging.warning("will not ingest HTTP status %d: %s",obj.http_status, obj.line)
+            logging.warning("will not ingest HTTP status %s: %s",obj.http_status, obj.line)
             return BAD
     elif obj.operation in WRITE_OBJECTS:
         if obj.http_status in range(400,500):
