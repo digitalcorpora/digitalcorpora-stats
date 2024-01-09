@@ -6,3 +6,4 @@ python/.coverage
 python/coverage.xml
 *.pyc
 *.log
+*ini
