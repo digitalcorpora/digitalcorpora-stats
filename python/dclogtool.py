@@ -43,6 +43,7 @@ from ctools import clogging
 import ctools.lock
 
 MULTIPROCESSING = False
+DELETE_IN_BACKGROUND = False
 DEFAULT_THREADS = 20   # Good for a microvm
 NOTIFICATION_SIZE = 100_000_000
 
@@ -53,7 +54,6 @@ STAT_S3_DOWNLOAD_RECORDS = 'S3_DOWNLOAD_RECORDS'
 STAT_S3_DOWNLOADS = 'S3_DOWNLOADS'
 STAT_S3_EARLIEST = 'S3_EARLIEST'
 STAT_S3_LATEST = 'S3_LATEST'
-
 
 S3_DATA_BUCKET = 'digitalcorpora'
 S3_LOG_BUCKET = 'digitalcorpora-logs'
@@ -72,6 +72,9 @@ WRITE_OBJECTS = set([ 'REST.PUT.PART',
 DEL_OBJECTS = set(['REST.DELETE.OBJECT',
                    'REST.DELETE.UPLOAD',
                    'REST.POST.MULTI_OBJECT_DELETE',
+                   'REST.PUT.BUCKET',
+                   'REST.PATCH.BUCKET',
+                   'REST.DELETE.BUCKET',
                    'S3.EXPIRE.OBJECT',
                    ])
 
@@ -148,6 +151,8 @@ config_signed   = Config(connect_timeout=5, retries={'max_attempts': 4})
 
 
 ignore_keys = set()
+
+threads_started = 0
 
 ################################################################
 ### stats
@@ -415,6 +420,7 @@ def hash_s3prefix(auth, Prefix, *, threads=40, timeout=DEFAULT_TIMEOUT):
             q.task_done()
     for i in range(threads):
         threading.Thread(target=worker, daemon=True).start()
+
     for obj in to_hash:
         q.put(obj)
     q.join()
@@ -558,6 +564,7 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, Key):
     :param auth: authentication token to write to the database
     :param key: key of the logfile
     """
+    global threads_started
     assert Key is not None
     assert type(Key)==str
     count = 0
@@ -579,7 +586,17 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, Key):
             count += 1
 
     # It turns out that deleting objects can take a really long time, so do it in another thread
-    threading.Thread(target=s3_delete_object, kwargs={'Bucket':S3_LOG_BUCKET, 'Key':Key}).start()
+    if DELETE_IN_BACKGROUND:
+        try:
+            threading.Thread(target=s3_delete_object, kwargs={'Bucket':S3_LOG_BUCKET, 'Key':Key}).start()
+            threads_started += 1
+        except RuntimeError as e:
+            # Delete the object manually
+            logging.error(f"Error thread start: {e} total threads started: {threads_started} active_count: {threading.active_count()}")
+            s3_delete_object(Bucket=S3_LOG_BUCKET, Key=Key)
+    else:
+        s3_delete_object(Bucket=S3_LOG_BUCKET, Key=Key)
+
     # s3_delete_object(Bucket=S3_LOG_BUCKET, Key=Key)
     s3_logfile_lock.acquire()
     s3_logfile.flush()
