@@ -12,9 +12,15 @@ jobs:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
-    - run: |
-        eval $(ssh-agent)
-        ssh-add - <<< "${{ secrets.DCWRITER_SSH_KEY }}"
-        ssh-add -l
-        ssh -o StrictHostKeyChecking=no dcwriter@downloads.digitalcorpora.org "cd digitalcorpora-stats;git pull --recurse-submodules; make install-dependencies"
-        echo The PR was merged
+
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          submodules: true
+
+      - run: |
+          eval $(ssh-agent)
+          ssh-add - <<< "${{ secrets.DCWRITER_SSH_KEY }}"
+          ssh-add -l
+          ssh -o StrictHostKeyChecking=no dcwriter@downloads.digitalcorpora.org "cd digitalcorpora-stats;git pull --recurse-submodules; make install-dependencies"
+          echo The PR was merged

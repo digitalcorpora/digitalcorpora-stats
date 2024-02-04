@@ -712,7 +712,7 @@ def logfile_opener(fname):
 
 def db_summarize_day( auth, day):
     """Note: This could be updated to capture the speed of the download or the duration of the download. But why bother?"""
-    print(day)
+    print("summarize",day)
     next_day = day + datetime.timedelta(days=1)
     cmd = ("INSERT INTO downloads (did, remote_ipaddr, user_agent_id, dtime, bytes_sent, summary) "
            "SELECT did, remote_ipaddr, user_agent_id, DATE(dtime), SUM(bytes_sent), 1 "

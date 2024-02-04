@@ -1,0 +1,42 @@
+% python dclogtool.py --download_summarize --env --prod -- summarize for 2023
+
+
+TO create the roll-over:
+
+source dbwriter_digitalcorpora.bash
+
+1 - Create a  new databse where the first user is dwriter
+2 - Add simsong, dwriter and dcreader as users.
+3 - Make sure permissions are correct
+4 - Load the schema for downloads:
+  dbdump -d
+
+use dcstats_2023;
+
+Add this table:
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `downloads` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `did` int NOT NULL,
+  `user_agent_id` int DEFAULT NULL,
+  `remote_ipaddr` varchar(64) DEFAULT NULL,
+  `dtime` datetime NOT NULL,
+  `bytes_sent` bigint DEFAULT NULL,
+  `summary` tinyint(1) DEFAULT '0',
+  PRIMARY KEY (`id`),
+  KEY `did` (`did`),
+  KEY `ipaddr` (`remote_ipaddr`),
+  KEY `dtime` (`dtime`),
+  KEY `bytes_sent` (`bytes_sent`),
+  KEY `user_agent_id` (`user_agent_id`),
+  KEY `summary` (`summary`),
+  KEY `date1` (`dtime`,`summary`),
+  KEY `date2` (`summary`,`dtime`)
+) ENGINE=InnoDB AUTO_INCREMENT=40134529 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+- Now select into this table from the dcstats table
+
+insert into dcstats_2023.downloads (did,remote_ipaddr,dtime,bytes_sent,user_agent_id,summary)
+select did,remote_ipaddr,date(dtime),sum(bytes_sent),user_agent_id,1 from dcstats.downloads group by did,remote_ipaddr,date(dtime),user_agent_id
