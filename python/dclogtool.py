@@ -585,7 +585,7 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, Key):
             s3_logfile_lock.release()
             count += 1
 
-    # It turns out that deleting objects can take a really long time, so do it in another thread
+    # It turns out that deleting objects can take a really long time, so we will move this to a work queue
     if DELETE_IN_BACKGROUND:
         try:
             threading.Thread(target=s3_delete_object, kwargs={'Bucket':S3_LOG_BUCKET, 'Key':Key}).start()
