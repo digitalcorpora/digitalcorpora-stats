@@ -714,6 +714,9 @@ def db_summarize_day( auth, day):
     """Note: This could be updated to capture the speed of the download or the duration of the download. But why bother?"""
     print("summarize",day)
     next_day = day + datetime.timedelta(days=1)
+    before = dbfile.DBMySQL.csfr(auth, "SELECT count(*) from downloads where DATE(dtime)=%s",(day,))
+    print("before:",before[0][0])
+
     cmd = ("INSERT INTO downloads (did, remote_ipaddr, user_agent_id, dtime, bytes_sent, summary) "
            "SELECT did, remote_ipaddr, user_agent_id, DATE(dtime), SUM(bytes_sent), 1 "
            "FROM downloads "
@@ -721,11 +724,19 @@ def db_summarize_day( auth, day):
     dbfile.DBMySQL.csfr(auth, cmd, (day, next_day))
     cmd = ("DELETE FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=0")
     dbfile.DBMySQL.csfr(auth, cmd, (day, next_day))
+    after = dbfile.DBMySQL.csfr(auth, "SELECT count(*) from downloads where DATE(dtime)=%s",(day,))
+    print("after:",after[0][0])
+    return before[0][0] - after[0][0]
 
 def db_download_summarize( auth, first, last):
+    saved = 0
     while first<=last:
-        db_summarize_day(auth, first)
+        saved += db_summarize_day(auth, first)
         first += datetime.timedelta(days=1)
+    print("Total saved:",saved)
+    if saved:
+        print("optimizing")
+        dbfile.DBMySQL.csfr(auth, "optimize table downloads")
 
 
 class TimeoutException(Exception):
@@ -813,6 +824,7 @@ def setup_parser():
     parser.add_argument("--last", help="last date for summarizaiton")
     parser.add_argument("--year", help="go from Jan 1 to Dec. 31 of this year",type=int)
     parser.add_argument("--timeout", default=3500, type=int, help="Timeout in seconds")
+    parser.add_argument("--nolock", action='store_true', help='do not lock dclogtool.py')
 
     # Tell me how to authenticate ---
     g = parser.add_mutually_exclusive_group(required=True)
@@ -888,7 +900,8 @@ def main():
         db.create_schema(open("schema.sql", "r").read())
 
     # Don't allow another copy to run the script
-    ctools.lock.lock_script()
+    if not args.nolock:
+        ctools.lock.lock_script()
 
     # Do what we are supposed to do
     #signal.signal(signal.SIGALRM,timeout_handler)
