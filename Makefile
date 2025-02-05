@@ -3,6 +3,9 @@ PYTHON_DIR=python
 pylint:
 	(cd $(PYTHON_DIR); make pylint)
 
+summarize:
+	(source $$HOME/dbwriter.bash; python3 python/dclogtool.py --env --prod --download_summarize --year 2025)
+
 dreamhost-download-s3logs:
 	(source $$HOME/dbwriter.bash; python3 python/dclogtool.py --s3_logs_download_ingest_and_save --env --prod  --loglevel WARNING -j10 --ignore_keys ignore.txt)
 
