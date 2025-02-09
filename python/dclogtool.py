@@ -91,6 +91,7 @@ MISC_OBJECTS = set([
     'REST.GET.ACCELERATE',
     'REST.GET.ACL',
     'REST.GET.ANALYTICS',
+    'REST.HEAD.TORRENT',
     'REST.GET.BUCKET',
     'REST.GET.BUCKETPOLICY',
     'REST.GET.BUCKETVERSIONS',
@@ -502,7 +503,7 @@ def validate_obj(auth, obj):
         logging.info("Ingesting date=%s",obj.dtime.date())
         seen_dates.add(obj.dtime.date())
     if obj.operation in GET_OBJECTS:
-        if obj.http_status in [200,206]:
+        if obj.http_status in [200,206] or obj.http_status is None:
             return DOWNLOAD
         elif obj.http_status in range(300,400):
             return BAD

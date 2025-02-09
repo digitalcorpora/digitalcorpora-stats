@@ -1,3 +1,4 @@
+SHELL=bash
 PYTHON_DIR=python
 
 pylint:
