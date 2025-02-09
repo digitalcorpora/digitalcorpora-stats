@@ -7,3 +7,4 @@ python/coverage.xml
 *.pyc
 *.log
 *ini
+venv
