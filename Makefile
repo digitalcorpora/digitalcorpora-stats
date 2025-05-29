@@ -2,16 +2,16 @@ SHELL=bash
 PYTHON_DIR=python
 
 pylint:
-	(cd $(PYTHON_DIR); make pylint)
+	cd $(PYTHON_DIR); make pylint
 
 summarize:
-	(source $$HOME/dbwriter.bash; python3 python/dclogtool.py --env --prod --download_summarize --year 2025)
+	source $$HOME/dbwriter.bash; python3 python/dclogtool.py --env --prod --download_summarize
 
 dreamhost-download-s3logs:
-	(source $$HOME/dbwriter.bash; python3 python/dclogtool.py --s3_logs_download_ingest_and_save --env --prod  --loglevel WARNING -j10 --ignore_keys ignore.txt)
+	source $$HOME/dbwriter.bash; python3 python/dclogtool.py --s3_logs_download_ingest_and_save --env --prod  --loglevel WARNING -j10 --ignore_keys ignore.txt --download_summarize
 
 backup-sql:
-	(source $$HOME/dbwriter.bash; dbdump | gzip -9 > $$HOME/dcstats-dump.$$(date -I).gz)
+	source $$HOME/dbwriter.bash; dbdump | gzip -9 > $$HOME/dcstats-dump.$$(date -I).gz
 
 check:
 	make pytest
@@ -26,7 +26,7 @@ configure-aws:
 	make install-dependencies
 
 coverage:
-	(cd $(PYTHON_DIR); python3 -m pytest --debug -v --cov=. --cov-report=xml tests; cp coverage.xml ..)
+	cd $(PYTHON_DIR); python3 -m pytest --debug -v --cov=. --cov-report=xml tests; cp coverage.xml ..
 
 pytest:
-	(cd $(PYTHON_DIR); make pytest)
+	cd $(PYTHON_DIR); make pytest

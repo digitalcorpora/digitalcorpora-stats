@@ -711,12 +711,14 @@ def logfile_opener(fname):
     else:
         return open(fname, "rt")
 
-def db_summarize_day( auth, day):
+def db_summarize_day( auth, day, verbose=False):
     """Note: This could be updated to capture the speed of the download or the duration of the download. But why bother?"""
-    print("summarize",day)
+    if verbose:
+        print("summarize",day)
     next_day = day + datetime.timedelta(days=1)
     before = dbfile.DBMySQL.csfr(auth, "SELECT count(*) from downloads where DATE(dtime)=%s",(day,))
-    print("before:",before[0][0])
+    if verbose:
+        print("before:",before[0][0])
 
     cmd = ("INSERT INTO downloads (did, remote_ipaddr, user_agent_id, dtime, bytes_sent, summary) "
            "SELECT did, remote_ipaddr, user_agent_id, DATE(dtime), SUM(bytes_sent), 1 "
@@ -726,17 +728,20 @@ def db_summarize_day( auth, day):
     cmd = ("DELETE FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=0")
     dbfile.DBMySQL.csfr(auth, cmd, (day, next_day))
     after = dbfile.DBMySQL.csfr(auth, "SELECT count(*) from downloads where DATE(dtime)=%s",(day,))
-    print("after:",after[0][0])
+    if verbose:
+        print("after:",after[0][0])
     return before[0][0] - after[0][0]
 
-def db_download_summarize( auth, first, last):
+def db_download_summarize( auth, first, last, verbose=False):
     saved = 0
     while first<=last:
-        saved += db_summarize_day(auth, first)
+        saved += db_summarize_day(auth, first, verbose=verbose)
         first += datetime.timedelta(days=1)
-    print("Total saved:",saved)
+    if verbose:
+        print("Total saved:",saved)
     if saved:
-        print("optimizing")
+        if verbose:
+            print("optimizing")
         dbfile.DBMySQL.csfr(auth, "optimize table downloads")
 
 
@@ -820,8 +825,8 @@ def setup_parser():
     g.add_argument("--copy", action='store_true',
                    help='Copy downloads from test to prod that are not present in prod')
     g.add_argument("--gc", action='store_true', help='Garbage collect the MySQL database')
-    g.add_argument("--download_summarize", action='store_true', help='summarize the downloads for a given day')
     parser.add_argument("--first", help="first date for summarizaiton")
+    parser.add_argument("--download_summarize", action='store_true', help='summarize the downloads for a given day')
     parser.add_argument("--last", help="last date for summarizaiton")
     parser.add_argument("--year", help="go from Jan 1 to Dec. 31 of this year",type=int)
     parser.add_argument("--timeout", default=3500, type=int, help="Timeout in seconds")
@@ -843,6 +848,7 @@ def setup_parser():
     return parser
 
 def main():
+    t0 = time.time()
     parser = setup_parser()
     args = parser.parse_args()
     clogging.setup(args.loglevel,
@@ -920,8 +926,9 @@ def main():
             try:
                 s3_logs_download_ingest_and_save(auth, args.threads, args.limit)
             except KeyboardInterrupt as e:
-                print(e)
-            print_statistics()
+                print(e,file=sys.stderr)
+            if args.verbose:
+                print_statistics()
         elif args.s3_logs_info:
             s3_logs_info(args.limit)
         elif args.copy:
@@ -930,7 +937,8 @@ def main():
             db_gc( auth, "s3://" + D3_DATA_BUCKET)
         elif args.db_stats:
             db_stats( auth )
-        elif args.download_summarize:
+
+        if args.download_summarize:
             if args.first==None:
                 first = dbfile.DBMySQL.csfr(auth, "select date(dtime) from downloads where summary=0 order by dtime limit 1")[0][0]
             else:
@@ -939,13 +947,15 @@ def main():
                 last = dbfile.DBMySQL.csfr(auth, "select date(dtime) from downloads where summary=0 order by dtime desc limit 1")[0][0]
             else:
                 last = datetime.datetime.strptime(args.last, "%Y-%m-%d")
-            db_download_summarize(auth, first, last)
-        else:
-            raise RuntimeError("Unknown action")
+            db_download_summarize(auth, first, last, verbose=args.verbose)
+            if args.verbose:
+                print("Running time1: ",int(time.time() - t0))
+
     except TimeoutException as e:
         pass
     finally:
         signal.alarm(0)
+
 
 if __name__=="__main__":
     main()
