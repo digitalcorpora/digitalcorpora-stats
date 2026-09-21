@@ -36,6 +36,8 @@ import botocore.exceptions
 import weblog.schema
 import weblog.weblog
 
+from weblog.weblog import S3LogException
+
 import aws_secrets
 
 from ctools import dbfile
@@ -572,7 +574,10 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, Key):
     o2   = s3_get_object(Bucket=S3_LOG_BUCKET, Key=Key, Signed=True)
     line_stream = codecs.getreader("utf-8")
     for line in line_stream(o2['Body']):
-        obj = weblog.weblog.S3Log(line)
+        try:
+            obj = weblog.weblog.S3Log(line)
+        except S3LogException:
+            continue
         if obj.key in ignore_keys:
             continue
         what = validate_obj(auth, obj)

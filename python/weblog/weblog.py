@@ -9,8 +9,14 @@ S3Log is a sublcass which can do S3logs.
 """
 
 import re
+import logging
 import dateutil.parser
 import urllib.parse
+from dateutil.parser import ParserError
+
+
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.WARNING)
+logger = logging.getLogger(__name__)
 
 REST_GET_OBJECT='REST.GET.OBJECT'
 REST_PUT_PART='REST.PUT.PART'
@@ -96,6 +102,10 @@ class Weblog:
         m = self.DL_PAT.search(self.url)
         return m is not None
 
+class S3LogException(Exception):
+    pass
+
+
 class S3Log:
     """Class that decodes S3Logs.
     From https://docs.aws.amazon.com/AmazonS3/latest/userguide/LogFormat.html
@@ -144,11 +154,16 @@ class S3Log:
         if line is not None:
             parts = self.S3_RE.findall(line)
             if len(parts)<17:
-                raise ValueError(f"could not parse {len(line)}-byte line starting with character {ord(line[0])}: {line}\nOnly found {len(parts)} parts")
+                logger.warning("could not parse %s-byte line '%s' -- Only found %s parts",
+                               len(line),line,len(parts))
+                raise S3LogException()
             self.line         = line
             self.bucket_owner = parts[0][2]
             self.bucket       = parts[1][2]
-            self.dtime         = dateutil.parser.parse(parts[2][1].replace(":"," ",1))
+            try:
+                self.dtime         = dateutil.parser.parse(parts[2][1].replace(":"," ",1))
+            except ParserError as e:
+                raise S3LogException() from e
             self.remote_ip    = parts[3][2]
             self.requester    = parts[4][2]
             self.request_id   = parts[5][2]
