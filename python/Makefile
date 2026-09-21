@@ -1,7 +1,7 @@
 SHELL=/bin/bash
 
 pylint:
-	pylint --rcfile .pylintrc  --verbose  *.py   --fail-under 5
+	python3 -m pylint --rcfile .pylintrc  --verbose  *.py   --fail-under 5
 
 pytest:
 	python3 -m pytest .
