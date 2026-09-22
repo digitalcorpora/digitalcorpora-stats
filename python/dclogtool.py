@@ -48,6 +48,7 @@ MULTIPROCESSING = False
 DELETE_IN_BACKGROUND = False
 DEFAULT_THREADS = 20   # Good for a microvm
 NOTIFICATION_SIZE = 100_000_000
+PROGRESS_INTERVAL_SECONDS = 30
 
 stats = defaultdict(int)
 STAT_S3_OBJECTS = 'S3_OBJECTS'
@@ -57,12 +58,50 @@ STAT_S3_DOWNLOADS = 'S3_DOWNLOADS'
 STAT_S3_EARLIEST = 'S3_EARLIEST'
 STAT_S3_LATEST = 'S3_LATEST'
 
+
+class ProgressReporter:
+    """Emit bounded ingestion progress from concurrent workers."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.reset()
+
+    def reset(self):
+        with self.lock:
+            self.started = time.monotonic()
+            self.last_report = self.started
+            self.source_records = 0
+            self.downloads = 0
+            self.bytes_sent = 0
+
+    def committed(self, source_records, downloads, bytes_sent):
+        """Record work only after its database transaction commits."""
+        with self.lock:
+            self.source_records += source_records
+            self.downloads += downloads
+            self.bytes_sent += bytes_sent
+            now = time.monotonic()
+            if now - self.last_report < PROGRESS_INTERVAL_SECONDS:
+                return
+            elapsed = now - self.started
+            logging.info(
+                "progress: %.0fs; %s log records (%.1f/s); %s downloads; %.2f GiB sent (%.2f MiB/s)",
+                elapsed, self.source_records, self.source_records / elapsed,
+                self.downloads, self.bytes_sent / (1024 ** 3),
+                self.bytes_sent / elapsed / (1024 ** 2))
+            self.last_report = now
+
+
+progress_reporter = ProgressReporter()
+
 S3_DATA_BUCKET = 'digitalcorpora'
 S3_LOG_BUCKET = 'digitalcorpora-logs'
 
 # The logfile for this year
 S3_LOGFILE_PATH = os.path.join( os.getenv("HOME"), "s3logs", f"s3logs.{datetime.datetime.now().year}.log")
 DEFAULT_TIMEOUT = 30
+# Keep loss/replay exposure deliberately small on the shared DreamHost MySQL host.
+INGEST_BATCH_LINES = 20
 WRITE_OBJECTS = set([ 'REST.PUT.PART',
                       'REST.PUT.OBJECT',
                       'REST.POST.OBJECT',
@@ -156,6 +195,9 @@ config_signed   = Config(connect_timeout=5, retries={'max_attempts': 4})
 ignore_keys = set()
 
 threads_started = 0
+# S3 reads may run concurrently, but MySQL batch transactions must not contend
+# for unique-index locks in downloadable and user_agents.
+database_write_lock = threading.Lock()
 
 ################################################################
 ### stats
@@ -179,7 +221,7 @@ def print_statistics():
 ### Low-level routines for working with S3
 ################################################################
 
-def s3_get_object(*, Bucket=None, Key=None, url=None, Signed = True):
+def s3_get_object(*, Bucket=None, Key=None, url=None, Signed=True, byte_range=None, etag=None):
     logging.debug("Bucket=%s Key=%s url=%s Signed=%s",Bucket,Key,url,Signed)
     if url:
         p = urllib.parse.urlparse(Prefix)
@@ -191,7 +233,12 @@ def s3_get_object(*, Bucket=None, Key=None, url=None, Signed = True):
 
     s3client  = boto3.client('s3', config = config_signed if Signed else config_unsigned)
     try:
-        return s3client.get_object(Bucket=Bucket, Key=Key)
+        params = {'Bucket': Bucket, 'Key': Key}
+        if byte_range is not None:
+            params['Range'] = byte_range
+        if etag is not None:
+            params['IfMatch'] = etag
+        return s3client.get_object(**params)
     except botocore.exceptions.ParamValidationError:
         logging.error("Bucket=%s Key=%s",Bucket,Key)
         raise
@@ -443,6 +490,117 @@ def hash_s3prefix(auth, Prefix, *, threads=40, timeout=DEFAULT_TIMEOUT):
 seen_dates = set()
 ingested_s3key = set()
 ingested_user_agent = set()
+
+INGEST_STATE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS s3_log_ingest_state (
+    s3key VARCHAR(768) NOT NULL,
+    etag VARCHAR(128) NOT NULL,
+    next_byte BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    completed TINYINT(1) NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (s3key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
+
+def ensure_ingest_state_schema(auth):
+    """Create the small, durable checkpoint table used for S3 access logs."""
+    dbfile.DBMySQL.csfr(auth, INGEST_STATE_SCHEMA)
+
+
+def cached_db(auth):
+    """Return the connection associated with this ingestion worker."""
+    try:
+        return auth.cache_get()
+    except KeyError:
+        db = dbfile.DBMySQL(auth)
+        auth.cache_store(db)
+        return db
+
+
+def get_ingest_state(auth, key, etag):
+    """Return the committed byte offset for this exact version of an S3 log."""
+    db = cached_db(auth)
+    cursor = db.cursor()
+    try:
+        cursor.execute(
+            """INSERT INTO s3_log_ingest_state (s3key, etag)
+               VALUES (%s, %s)
+               ON DUPLICATE KEY UPDATE
+                 next_byte=IF(etag=VALUES(etag), next_byte, 0),
+                 completed=IF(etag=VALUES(etag), completed, 0),
+                 etag=VALUES(etag)""",
+            (key, etag))
+        cursor.execute("SELECT next_byte, completed FROM s3_log_ingest_state WHERE s3key=%s", (key,))
+        next_byte, completed = cursor.fetchone()
+        return next_byte, bool(completed)
+    finally:
+        cursor.close()
+
+
+def insert_logfile_obj_with_cursor(cursor, obj):
+    """Insert one download using the caller's transaction."""
+    cursor.execute("INSERT IGNORE INTO downloadable (s3key, bytes) VALUES (%s, %s)",
+                   (obj.key, obj.object_size))
+    cursor.execute("INSERT IGNORE INTO user_agents (user_agent) VALUES (%s)", (obj.user_agent,))
+    cursor.execute(
+        """INSERT INTO downloads (did, user_agent_id, remote_ipaddr, dtime, bytes_sent)
+           SELECT downloadable.id, user_agents.id, %s, %s, %s
+           FROM downloadable JOIN user_agents
+           WHERE downloadable.s3key=%s AND user_agents.user_agent=%s""",
+        (obj.remote_ip, obj.dtime, obj.bytes_sent, obj.key, obj.user_agent))
+    logging.debug("%s %s %s bytes_sent=%s", obj.dtime, obj.key, obj.remote_ip, obj.bytes_sent)
+
+
+def commit_s3_log_batch(auth, key, etag, batch, next_byte):
+    """Atomically store a batch of parsed records and its source byte checkpoint."""
+    db = cached_db(auth)
+    cursor = db.cursor()
+    raw_download_lines = []
+    count = 0
+    bytes_sent = 0
+    with database_write_lock:
+        try:
+            db.conn.begin()
+            for line in batch:
+                try:
+                    obj = weblog.weblog.S3Log(line)
+                except S3LogException:
+                    continue
+                if obj.key in ignore_keys:
+                    continue
+                what = validate_obj(auth, obj)
+                stats[STAT_S3_RECORDS] += 1
+                if what == DOWNLOAD:
+                    insert_logfile_obj_with_cursor(cursor, obj)
+                    raw_download_lines.append(line)
+                    stats[STAT_S3_DOWNLOAD_RECORDS] += 1
+                    stats_update_dtime(obj.dtime)
+                    bytes_sent += obj.bytes_sent or 0
+                    count += 1
+            cursor.execute(
+                """UPDATE s3_log_ingest_state SET next_byte=%s
+                   WHERE s3key=%s AND etag=%s AND completed=0""",
+                (next_byte, key, etag))
+            if cursor.rowcount != 1:
+                raise RuntimeError(f"lost checkpoint for S3 log {key}")
+            db.conn.commit()
+        except Exception:
+            db.conn.rollback()
+            cursor.close()
+            raise
+    cursor.close()
+    progress_reporter.committed(len(batch), count, bytes_sent)
+    return count, raw_download_lines
+
+
+def mark_s3_log_completed(auth, key, etag):
+    """Commit completion before deleting the source S3 object."""
+    dbfile.DBMySQL.csfr(
+        auth,
+        """UPDATE s3_log_ingest_state SET completed=1
+           WHERE s3key=%s AND etag=%s""",
+        (key, etag), rowcount=1)
 def insert_logfile_obj_into_db(auth, obj):
     """ First make sure that it's in downloads and get its ID.
     Note that the downloads are tracked by key, even though the object identified by the key may change.
@@ -473,7 +631,7 @@ def insert_logfile_obj_into_db(auth, obj):
                                %s,%s,%s)
                         """,
                         (obj.key, obj.user_agent, obj.remote_ip, obj.dtime, obj.bytes_sent))
-    logging.info("%s %s %s bytes_sent=%s",obj.dtime,obj.key,obj.remote_ip, obj.bytes_sent)
+    logging.debug("%s %s %s bytes_sent=%s",obj.dtime,obj.key,obj.remote_ip, obj.bytes_sent)
 
 ## s3 logs (a collection of objects in an S3 bucket; each object can have 1 or more S3 logs.)
 def s3_logs_info(limit=sys.maxsize):
@@ -562,51 +720,82 @@ def logfile_ingest(auth, f, factory):
     for (k,v) in sums.items():
         logging.info("%s %s",k,v)
 
-def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, Key):
-    """Given an s3 key, ingest each of its records (there can be many), and them to the databse, and then delete it.
+def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, s3_obj):
+    """Ingest one S3 access-log object in restartable, atomic batches.
+
+    The database checkpoint is updated in the same transaction as the rows it
+    covers.  A timeout can therefore replay at most the current batch.
     :param auth: authentication token to write to the database
-    :param key: key of the logfile
+    :param s3_obj: object description returned by ``list_objects_v2``
     """
     global threads_started
-    assert Key is not None
-    assert type(Key)==str
+    key = s3_obj['Key']
+    etag = s3_obj['ETag']
+    size = s3_obj['Size']
+    assert key is not None
+    assert isinstance(key, str)
+    offset, completed = get_ingest_state(auth, key, etag)
+    if completed:
+        logging.info("deleting completed S3 log %s", key)
+        s3_delete_object(Bucket=S3_LOG_BUCKET, Key=key)
+        return 0
+
     count = 0
-    o2   = s3_get_object(Bucket=S3_LOG_BUCKET, Key=Key, Signed=True)
-    line_stream = codecs.getreader("utf-8")
-    for line in line_stream(o2['Body']):
+    response = s3_get_object(Bucket=S3_LOG_BUCKET, Key=key, Signed=True,
+                             byte_range=f"bytes={offset}-", etag=etag)
+    pending = b''
+    batch = []
+    batch_end = offset
+
+    def commit_batch():
+        nonlocal count, batch
+        if not batch:
+            return
+        tally, raw_lines = commit_s3_log_batch(auth, key, etag, batch, batch_end)
+        count += tally
+        with s3_logfile_lock:
+            s3_logfile.writelines(raw_lines)
+            s3_logfile.flush()
+        batch = []
+
+    while True:
+        block = response['Body'].read(64 * 1024)
+        if not block:
+            break
+        pending += block
+        while b'\n' in pending:
+            raw_line, pending = pending.split(b'\n', 1)
+            raw_line += b'\n'
+            batch_end += len(raw_line)
+            try:
+                batch.append(raw_line.decode('utf-8'))
+            except UnicodeDecodeError:
+                logging.warning("skipping non-UTF-8 S3 log record in %s at byte %s", key, batch_end)
+            if len(batch) >= INGEST_BATCH_LINES:
+                commit_batch()
+    if pending:
+        batch_end += len(pending)
         try:
-            obj = weblog.weblog.S3Log(line)
-        except S3LogException:
-            continue
-        if obj.key in ignore_keys:
-            continue
-        what = validate_obj(auth, obj)
-        stats[STAT_S3_RECORDS] += 1
-        if what==DOWNLOAD:
-            stats[STAT_S3_DOWNLOAD_RECORDS] += 1
-            stats_update_dtime(obj.dtime)
-            insert_logfile_obj_into_db(auth, obj)
-            s3_logfile_lock.acquire()
-            s3_logfile.write(line)
-            s3_logfile_lock.release()
-            count += 1
+            batch.append(pending.decode('utf-8'))
+        except UnicodeDecodeError:
+            logging.warning("skipping non-UTF-8 S3 log record in %s at byte %s", key, batch_end)
+    commit_batch()
+    if batch_end != size:
+        raise RuntimeError(f"S3 log {key} ended at byte {batch_end}, expected {size}")
+    mark_s3_log_completed(auth, key, etag)
 
     # It turns out that deleting objects can take a really long time, so we will move this to a work queue
     if DELETE_IN_BACKGROUND:
         try:
-            threading.Thread(target=s3_delete_object, kwargs={'Bucket':S3_LOG_BUCKET, 'Key':Key}).start()
+            threading.Thread(target=s3_delete_object, kwargs={'Bucket':S3_LOG_BUCKET, 'Key':key}).start()
             threads_started += 1
         except RuntimeError as e:
             # Delete the object manually
             logging.error(f"Error thread start: {e} total threads started: {threads_started} active_count: {threading.active_count()}")
-            s3_delete_object(Bucket=S3_LOG_BUCKET, Key=Key)
+            s3_delete_object(Bucket=S3_LOG_BUCKET, Key=key)
     else:
-        s3_delete_object(Bucket=S3_LOG_BUCKET, Key=Key)
+        s3_delete_object(Bucket=S3_LOG_BUCKET, Key=key)
 
-    # s3_delete_object(Bucket=S3_LOG_BUCKET, Key=Key)
-    s3_logfile_lock.acquire()
-    s3_logfile.flush()
-    s3_logfile_lock.release()
     return count
 
 
@@ -619,6 +808,8 @@ def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize, timeout
     :param threads: number of threads to use
     """
     count = 0
+    progress_reporter.reset()
+    logging.info("ingestion started; progress reports every %s seconds", PROGRESS_INTERVAL_SECONDS)
     q  = queue.Queue(maxsize = threads*2)          # forward channel
     bc = queue.Queue()          # backchannel
 
@@ -630,25 +821,31 @@ def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize, timeout
         # deepcopy assures that each thread has its own copy of the auth object.
         auth2 = copy.deepcopy(auth)
         while True:
-            key = q.get()
-            logging.debug("key=%s",key)
-            if key==DIE_THREAD:
+            s3_obj = q.get()
+            logging.debug("key=%s", s3_obj)
+            if s3_obj==DIE_THREAD:
                 q.task_done()
                 return
-            tally = s3_log_ingest(s3_logfile, s3_logfile_lock, auth2, key)
-            count += tally
-            q.task_done()
+            try:
+                tally = s3_log_ingest(s3_logfile, s3_logfile_lock, auth2, s3_obj)
+                count += tally
+            except Exception:
+                logging.exception("failed to ingest S3 log %s", s3_obj['Key'])
+                bc.put(DIE_PARENT)
+            finally:
+                q.task_done()
             time.sleep(0)
 
     # Start the threads
     for _ in range(threads):
         threading.Thread(target=worker, daemon=True).start()
+    ensure_ingest_state_schema(auth)
     if True:
         for (ct,obj) in enumerate( s3_get_objects( Bucket=S3_LOG_BUCKET, Prefix=''),1):
             stats[STAT_S3_OBJECTS] += 1
             if count>limit:
                 break
-            q.put(obj['Key'],timeout=timeout)  # if we have blocked more than 30 seconds, something is wrong
+            q.put(obj,timeout=timeout)  # if we have blocked more than 30 seconds, something is wrong
 
             # Any news from the backchannel?
             # This allows exceptions in the worker thread to propigate to the parent.
@@ -721,7 +918,9 @@ def db_summarize_day( auth, day, verbose=False):
     if verbose:
         print("summarize",day)
     next_day = day + datetime.timedelta(days=1)
-    before = dbfile.DBMySQL.csfr(auth, "SELECT count(*) from downloads where DATE(dtime)=%s",(day,))
+    db = dbfile.DBMySQL(auth)
+    cursor = db.cursor()
+    before = dbfile.DBMySQL.csfr(auth, "SELECT count(*) from downloads where dtime>=%s AND dtime<%s", (day, next_day))
     if verbose:
         print("before:",before[0][0])
 
@@ -729,22 +928,31 @@ def db_summarize_day( auth, day, verbose=False):
            "SELECT did, remote_ipaddr, user_agent_id, DATE(dtime), SUM(bytes_sent), 1 "
            "FROM downloads "
            "WHERE dtime>=%s AND dtime<%s AND summary=0 GROUP BY did, remote_ipaddr, user_agent_id, DATE(dtime)")
-    dbfile.DBMySQL.csfr(auth, cmd, (day, next_day))
-    cmd = ("DELETE FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=0")
-    dbfile.DBMySQL.csfr(auth, cmd, (day, next_day))
-    after = dbfile.DBMySQL.csfr(auth, "SELECT count(*) from downloads where DATE(dtime)=%s",(day,))
+    try:
+        db.conn.begin()
+        cursor.execute(cmd, (day, next_day))
+        cursor.execute("DELETE FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=0", (day, next_day))
+        db.conn.commit()
+    except Exception:
+        db.conn.rollback()
+        raise
+    finally:
+        cursor.close()
+    after = dbfile.DBMySQL.csfr(auth, "SELECT count(*) from downloads where dtime>=%s AND dtime<%s", (day, next_day))
     if verbose:
         print("after:",after[0][0])
     return before[0][0] - after[0][0]
 
-def db_download_summarize( auth, first, last, verbose=False):
+def db_download_summarize(auth, first, last, verbose=False, max_days=None, optimize=False):
     saved = 0
-    while first<=last:
+    days = 0
+    while first<=last and (max_days is None or days < max_days):
         saved += db_summarize_day(auth, first, verbose=verbose)
         first += datetime.timedelta(days=1)
+        days += 1
     if verbose:
         print("Total saved:",saved)
-    if saved:
+    if saved and optimize:
         if verbose:
             print("optimizing")
         dbfile.DBMySQL.csfr(auth, "optimize table downloads")
@@ -827,6 +1035,8 @@ def setup_parser():
                         help='download S3 logs to local directory, combine into local logfile, and ingest')
     g.add_argument("--s3_logfile_ingest",  help='ingest an already downloaded s3 logfile')
     g.add_argument("--db_stats", help='provide information on database',action='store_true')
+    g.add_argument("--optimize_downloads", action='store_true',
+                   help='rebuild downloads to reclaim disk space')
     g.add_argument("--copy", action='store_true',
                    help='Copy downloads from test to prod that are not present in prod')
     g.add_argument("--gc", action='store_true', help='Garbage collect the MySQL database')
@@ -834,6 +1044,12 @@ def setup_parser():
     parser.add_argument("--download_summarize", action='store_true', help='summarize the downloads for a given day')
     parser.add_argument("--last", help="last date for summarizaiton")
     parser.add_argument("--year", help="go from Jan 1 to Dec. 31 of this year",type=int)
+    parser.add_argument("--max_summarize_days", type=int,
+                        help="maximum number of days to summarize, starting with the oldest")
+    parser.add_argument("--stable_only", action='store_true',
+                        help="do not summarize the current UTC day")
+    parser.add_argument("--optimize", action='store_true',
+                        help="run OPTIMIZE TABLE after summarization")
     parser.add_argument("--timeout", default=3500, type=int, help="Timeout in seconds")
     parser.add_argument("--nolock", action='store_true', help='do not lock dclogtool.py')
 
@@ -942,17 +1158,39 @@ def main():
             db_gc( auth, "s3://" + D3_DATA_BUCKET)
         elif args.db_stats:
             db_stats( auth )
+        elif args.optimize_downloads:
+            logging.info("optimizing downloads")
+            dbfile.DBMySQL.csfr(auth, "OPTIMIZE TABLE downloads")
 
         if args.download_summarize:
+            stable_last = datetime.datetime.utcnow().date() - datetime.timedelta(days=1)
             if args.first==None:
-                first = dbfile.DBMySQL.csfr(auth, "select date(dtime) from downloads where summary=0 order by dtime limit 1")[0][0]
+                rows = dbfile.DBMySQL.csfr(
+                    auth,
+                    "SELECT date(dtime) FROM downloads WHERE summary=0 AND dtime<%s ORDER BY dtime LIMIT 1",
+                    (stable_last + datetime.timedelta(days=1),))
+                if not rows:
+                    logging.info("no stable unsummarized downloads")
+                    return
+                first = rows[0][0]
             else:
                 first = datetime.datetime.strptime(args.first, "%Y-%m-%d")
             if args.last==None:
-                last = dbfile.DBMySQL.csfr(auth, "select date(dtime) from downloads where summary=0 order by dtime desc limit 1")[0][0]
+                if args.stable_only:
+                    last = stable_last
+                else:
+                    rows = dbfile.DBMySQL.csfr(auth, "SELECT date(dtime) FROM downloads WHERE summary=0 ORDER BY dtime DESC LIMIT 1")
+                    if not rows:
+                        logging.info("no unsummarized downloads")
+                        return
+                    last = rows[0][0]
             else:
                 last = datetime.datetime.strptime(args.last, "%Y-%m-%d")
-            db_download_summarize(auth, first, last, verbose=args.verbose)
+            if first > last:
+                logging.info("no eligible unsummarized downloads")
+                return
+            db_download_summarize(auth, first, last, verbose=args.verbose,
+                                  max_days=args.max_summarize_days, optimize=args.optimize)
             if args.verbose:
                 print("Running time1: ",int(time.time() - t0))
 
