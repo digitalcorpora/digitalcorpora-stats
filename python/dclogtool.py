@@ -1040,8 +1040,8 @@ def setup_parser():
     g.add_argument("--copy", action='store_true',
                    help='Copy downloads from test to prod that are not present in prod')
     g.add_argument("--gc", action='store_true', help='Garbage collect the MySQL database')
+    g.add_argument("--download_summarize", action='store_true', help='summarize downloads')
     parser.add_argument("--first", help="first date for summarizaiton")
-    parser.add_argument("--download_summarize", action='store_true', help='summarize the downloads for a given day')
     parser.add_argument("--last", help="last date for summarizaiton")
     parser.add_argument("--year", help="go from Jan 1 to Dec. 31 of this year",type=int)
     parser.add_argument("--max_summarize_days", type=int,

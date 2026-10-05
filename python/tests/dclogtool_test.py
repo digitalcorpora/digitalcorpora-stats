@@ -46,3 +46,8 @@ def test_s3_get_objects():
 def test_setup_parser():
     parser = dclogtool.setup_parser()
     assert parser is not None
+
+
+def test_download_summarize_is_an_action():
+    args = dclogtool.setup_parser().parse_args(['--download_summarize', '--env', '--prod'])
+    assert args.download_summarize
