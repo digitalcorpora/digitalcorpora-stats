@@ -7,6 +7,10 @@ pylint:
 summarize:
 	source $$HOME/dbwriter.bash; python3 python/dclogtool.py --env --prod --download_summarize
 
+summarize-year:
+	test -n "$(YEAR)"
+	source $$HOME/dbwriter.bash; .venv/bin/python python/dclogtool.py --env --prod --download_summarize --year $(YEAR)
+
 dreamhost-download-s3logs:
 	source $$HOME/dbwriter.bash; .venv/bin/python python/dclogtool.py --s3_logs_download_ingest_and_save --env --prod --loglevel INFO -j10 --ignore_keys ignore.txt
 
