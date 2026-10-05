@@ -49,6 +49,8 @@ DELETE_IN_BACKGROUND = False
 DEFAULT_THREADS = 20   # Good for a microvm
 NOTIFICATION_SIZE = 100_000_000
 PROGRESS_INTERVAL_SECONDS = 30
+SUMMARY_DELETE_BATCH_SIZE = 100_000
+SUMMARY_STATE_TABLE = "download_summarize_state"
 
 stats = defaultdict(int)
 STAT_S3_OBJECTS = 'S3_OBJECTS'
@@ -913,41 +915,121 @@ def logfile_opener(fname):
     else:
         return open(fname, "rt")
 
-def db_summarize_day( auth, day, verbose=False):
-    """Note: This could be updated to capture the speed of the download or the duration of the download. But why bother?"""
-    if verbose:
-        print("summarize",day)
+def ensure_summary_state_table(cursor):
+    """Create the tiny journal that makes large daily summaries resumable."""
+    cursor.execute(
+        f"CREATE TABLE IF NOT EXISTS {SUMMARY_STATE_TABLE} ("
+        "summary_day DATE NOT NULL PRIMARY KEY, "
+        "phase VARCHAR(16) NOT NULL, "
+        "updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP "
+        "ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB")
+
+
+def db_summarize_day(auth, day, verbose=False, reset_partial_summary=False):
+    """Summarize one stable UTC day without a long, all-row delete statement.
+
+    The grouped summary and a ``prepared`` journal row commit together.  Raw
+    records are then removed in independently committed batches, so a host-side
+    statement interruption can be retried without inserting duplicate summaries.
+    ``reset_partial_summary`` is a manual repair switch for legacy runs that
+    committed summaries before deleting their corresponding raw records.
+    """
     next_day = day + datetime.timedelta(days=1)
     db = dbfile.DBMySQL(auth)
     cursor = db.cursor()
-    before = dbfile.DBMySQL.csfr(auth, "SELECT count(*) from downloads where dtime>=%s AND dtime<%s", (day, next_day))
-    if verbose:
-        print("before:",before[0][0])
-
-    cmd = ("INSERT INTO downloads (did, remote_ipaddr, user_agent_id, dtime, bytes_sent, summary) "
-           "SELECT did, remote_ipaddr, user_agent_id, DATE(dtime), SUM(bytes_sent), 1 "
-           "FROM downloads "
-           "WHERE dtime>=%s AND dtime<%s AND summary=0 GROUP BY did, remote_ipaddr, user_agent_id, DATE(dtime)")
+    lock_name = f"download-summarize-{day:%Y-%m-%d}"
     try:
-        db.conn.begin()
-        cursor.execute(cmd, (day, next_day))
-        cursor.execute("DELETE FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=0", (day, next_day))
-        db.conn.commit()
-    except Exception:
-        db.conn.rollback()
-        raise
-    finally:
-        cursor.close()
-    after = dbfile.DBMySQL.csfr(auth, "SELECT count(*) from downloads where dtime>=%s AND dtime<%s", (day, next_day))
-    if verbose:
-        print("after:",after[0][0])
-    return before[0][0] - after[0][0]
+        cursor.execute("SELECT GET_LOCK(%s, 0)", (lock_name,))
+        if cursor.fetchone()[0] != 1:
+            raise RuntimeError(f"summary already running for {day:%Y-%m-%d}")
+        ensure_summary_state_table(cursor)
 
-def db_download_summarize(auth, first, last, verbose=False, max_days=None, optimize=False):
+        if reset_partial_summary:
+            db.conn.begin()
+            cursor.execute(f"DELETE FROM {SUMMARY_STATE_TABLE} WHERE summary_day=%s", (day,))
+            cursor.execute("DELETE FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=1",
+                           (day, next_day))
+            removed = cursor.rowcount
+            db.conn.commit()
+            logging.info("removed %s legacy summary rows for %s", removed, day.isoformat())
+
+        cursor.execute(f"SELECT phase FROM {SUMMARY_STATE_TABLE} WHERE summary_day=%s", (day,))
+        row = cursor.fetchone()
+        phase = row[0] if row else None
+        if phase is None:
+            cursor.execute("SELECT 1 FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=1 LIMIT 1",
+                           (day, next_day))
+            if cursor.fetchone():
+                raise RuntimeError(
+                    f"{day:%Y-%m-%d} has both raw and summary rows; "
+                    "rerun with --reset_partial_summary after verifying the raw logs")
+            cmd = ("INSERT INTO downloads (did, remote_ipaddr, user_agent_id, dtime, bytes_sent, summary) "
+                   "SELECT did, remote_ipaddr, user_agent_id, DATE(dtime), SUM(bytes_sent), 1 "
+                   "FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=0 "
+                   "GROUP BY did, remote_ipaddr, user_agent_id, DATE(dtime)")
+            db.conn.begin()
+            try:
+                cursor.execute(cmd, (day, next_day))
+                grouped_rows = cursor.rowcount
+                cursor.execute(f"INSERT INTO {SUMMARY_STATE_TABLE} (summary_day, phase) VALUES (%s, 'prepared')",
+                               (day,))
+                db.conn.commit()
+                logging.info("prepared %s summary rows for %s", grouped_rows, day.isoformat())
+            except Exception:
+                db.conn.rollback()
+                raise
+            phase = "prepared"
+
+        if phase == "complete":
+            return 0
+        if phase != "prepared":
+            raise RuntimeError(f"unexpected summary phase {phase!r} for {day:%Y-%m-%d}")
+
+        deleted = 0
+        batches = 0
+        while True:
+            db.conn.begin()
+            try:
+                cursor.execute(
+                    f"DELETE FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=0 "
+                    f"LIMIT {SUMMARY_DELETE_BATCH_SIZE}",
+                    (day, next_day))
+                batch_rows = cursor.rowcount
+                db.conn.commit()
+            except Exception:
+                db.conn.rollback()
+                raise
+            if batch_rows == 0:
+                break
+            deleted += batch_rows
+            batches += 1
+            if batches == 1 or batches % 10 == 0:
+                logging.info("summarized %s: deleted %s raw rows in %s batches",
+                             day.isoformat(), deleted, batches)
+
+        db.conn.begin()
+        try:
+            cursor.execute(f"UPDATE {SUMMARY_STATE_TABLE} SET phase='complete' WHERE summary_day=%s", (day,))
+            db.conn.commit()
+        except Exception:
+            db.conn.rollback()
+            raise
+        if verbose:
+            print(f"summarize {day}: deleted {deleted} raw rows")
+        return deleted
+    finally:
+        try:
+            cursor.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+        finally:
+            cursor.close()
+
+def db_download_summarize(auth, first, last, verbose=False, max_days=None, optimize=False,
+                          reset_partial_summary=False):
     saved = 0
     days = 0
     while first<=last and (max_days is None or days < max_days):
-        saved += db_summarize_day(auth, first, verbose=verbose)
+        saved += db_summarize_day(auth, first, verbose=verbose,
+                                  reset_partial_summary=reset_partial_summary)
         first += datetime.timedelta(days=1)
         days += 1
     if verbose:
@@ -1048,6 +1130,8 @@ def setup_parser():
                         help="maximum number of days to summarize, starting with the oldest")
     parser.add_argument("--stable_only", action='store_true',
                         help="do not summarize the current UTC day")
+    parser.add_argument("--reset_partial_summary", action='store_true',
+                        help="discard legacy summary rows before rebuilding one verified raw day")
     parser.add_argument("--optimize", action='store_true',
                         help="run OPTIMIZE TABLE after summarization")
     parser.add_argument("--timeout", default=3500, type=int, help="Timeout in seconds")
@@ -1088,6 +1172,10 @@ def main():
             sys.exit(1)
         args.first=f"{args.year}-01-01"
         args.last =f"{args.year}-12-31"
+
+    if args.reset_partial_summary:
+        if not args.download_summarize or not args.first or args.first != args.last:
+            parser.error("--reset_partial_summary requires --download_summarize with one --first/--last day")
 
 
     if args.ignore_keys:
@@ -1190,7 +1278,8 @@ def main():
                 logging.info("no eligible unsummarized downloads")
                 return
             db_download_summarize(auth, first, last, verbose=args.verbose,
-                                  max_days=args.max_summarize_days, optimize=args.optimize)
+                                  max_days=args.max_summarize_days, optimize=args.optimize,
+                                  reset_partial_summary=args.reset_partial_summary)
             if args.verbose:
                 print("Running time1: ",int(time.time() - t0))
 
