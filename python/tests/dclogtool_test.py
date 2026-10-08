@@ -51,3 +51,9 @@ def test_setup_parser():
 def test_download_summarize_is_an_action():
     args = dclogtool.setup_parser().parse_args(['--download_summarize', '--env', '--prod'])
     assert args.download_summarize
+
+
+def test_s3_log_prefix_is_available_for_ingestion():
+    args = dclogtool.setup_parser().parse_args([
+        '--s3_logs_download_ingest_and_save', '--s3_log_prefix', '2026-09-22', '--env', '--prod'])
+    assert args.s3_log_prefix == '2026-09-22'

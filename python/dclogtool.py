@@ -803,19 +803,27 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, s3_obj):
 
 DIE_PARENT = "<<DIE PARENT>>"
 DIE_THREAD = "<<DIE THREAD>>"     # hopefully no S3Key with this
-def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize, timeout=DEFAULT_TIMEOUT):
+def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize, timeout=DEFAULT_TIMEOUT,
+                                     prefix=''):
     """Download an S3 logs and ingest them.
     Runs in the main thread.
     :param auth: authentication token to write to the database.
     :param threads: number of threads to use
+    :param prefix: ingest only S3 log objects whose keys start with this prefix
     """
     count = 0
     progress_reporter.reset()
-    logging.info("ingestion started; progress reports every %s seconds", PROGRESS_INTERVAL_SECONDS)
+    logging.info("ingestion started for prefix %r; progress reports every %s seconds",
+                 prefix, PROGRESS_INTERVAL_SECONDS)
     q  = queue.Queue(maxsize = threads*2)          # forward channel
     bc = queue.Queue()          # backchannel
 
-    s3_logfile      = open(S3_LOGFILE_PATH,"a")
+    logfile_path = S3_LOGFILE_PATH
+    if prefix:
+        # Parallel prefix workers must not concurrently append to one local audit log.
+        prefix_digest = hashlib.sha256(prefix.encode("utf-8")).hexdigest()[:16]
+        logfile_path = f"{S3_LOGFILE_PATH}.{prefix_digest}"
+    s3_logfile      = open(logfile_path,"a")
     s3_logfile_lock = threading.Lock()
     def worker():
         """Runs in the worker thread"""
@@ -843,7 +851,7 @@ def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize, timeout
         threading.Thread(target=worker, daemon=True).start()
     ensure_ingest_state_schema(auth)
     if True:
-        for (ct,obj) in enumerate( s3_get_objects( Bucket=S3_LOG_BUCKET, Prefix=''),1):
+        for (ct,obj) in enumerate(s3_get_objects(Bucket=S3_LOG_BUCKET, Prefix=prefix), 1):
             stats[STAT_S3_OBJECTS] += 1
             if count>limit:
                 break
@@ -923,16 +931,33 @@ def ensure_summary_state_table(cursor):
         "phase VARCHAR(16) NOT NULL, "
         "updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP "
         "ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB")
+    cursor.execute("SELECT GET_LOCK('download-summary-schema-migration', 60)")
+    if cursor.fetchone()[0] != 1:
+        raise RuntimeError("could not acquire download-summary schema migration lock")
+    try:
+        cursor.execute(f"SHOW COLUMNS FROM {SUMMARY_STATE_TABLE}")
+        column_names = {column[0] for column in cursor.fetchall()}
+        missing_boundaries = {"processed_through_id", "prepared_through_id"} - column_names
+        if missing_boundaries:
+            cursor.execute(f"SELECT COUNT(*) FROM {SUMMARY_STATE_TABLE} WHERE phase='prepared'")
+            if cursor.fetchone()[0]:
+                cursor.execute(f"UPDATE {SUMMARY_STATE_TABLE} SET phase='legacy_prepared' "
+                               "WHERE phase='prepared'")
+                cursor.connection.commit()
+            for name in missing_boundaries:
+                cursor.execute(f"ALTER TABLE {SUMMARY_STATE_TABLE} "
+                               f"ADD COLUMN {name} BIGINT UNSIGNED NOT NULL DEFAULT 0")
+    finally:
+        cursor.execute("SELECT RELEASE_LOCK('download-summary-schema-migration')")
 
 
 def db_summarize_day(auth, day, verbose=False, reset_partial_summary=False):
     """Summarize one stable UTC day without a long, all-row delete statement.
 
-    The grouped summary and a ``prepared`` journal row commit together.  Raw
-    records are then removed in independently committed batches, so a host-side
-    statement interruption can be retried without inserting duplicate summaries.
-    ``reset_partial_summary`` is a manual repair switch for legacy runs that
-    committed summaries before deleting their corresponding raw records.
+    A journal stores the inclusive raw-ID boundary captured by each pass.  The
+    grouped summary and that boundary commit together; later batches delete only
+    the captured IDs.  Thus retries cannot delete late arrivals that were not
+    aggregated, and a completed day can summarize a later raw-ID range.
     """
     next_day = day + datetime.timedelta(days=1)
     db = dbfile.DBMySQL(auth)
@@ -944,18 +969,38 @@ def db_summarize_day(auth, day, verbose=False, reset_partial_summary=False):
             raise RuntimeError(f"summary already running for {day:%Y-%m-%d}")
         ensure_summary_state_table(cursor)
 
+        cursor.execute(f"SELECT phase, processed_through_id, prepared_through_id "
+                       f"FROM {SUMMARY_STATE_TABLE} WHERE summary_day=%s", (day,))
+        row = cursor.fetchone()
         if reset_partial_summary:
+            if row:
+                raise RuntimeError("cannot reset a journaled summary; resume it without --reset_partial_summary")
+            cursor.execute("SELECT 1 FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=0 LIMIT 1",
+                           (day, next_day))
+            if not cursor.fetchone():
+                raise RuntimeError("cannot reset a day with no raw rows")
             db.conn.begin()
-            cursor.execute(f"DELETE FROM {SUMMARY_STATE_TABLE} WHERE summary_day=%s", (day,))
             cursor.execute("DELETE FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=1",
                            (day, next_day))
             removed = cursor.rowcount
             db.conn.commit()
             logging.info("removed %s legacy summary rows for %s", removed, day.isoformat())
 
-        cursor.execute(f"SELECT phase FROM {SUMMARY_STATE_TABLE} WHERE summary_day=%s", (day,))
-        row = cursor.fetchone()
-        phase = row[0] if row else None
+            row = None
+
+        if row:
+            phase, processed_through_id, prepared_through_id = row
+        else:
+            phase, processed_through_id, prepared_through_id = None, 0, 0
+
+        cursor.execute("SELECT MAX(id) FROM downloads WHERE dtime>=%s AND dtime<%s "
+                       "AND summary=0 AND id>%s", (day, next_day, processed_through_id))
+        raw_max_id = cursor.fetchone()[0]
+        if phase == "complete" and raw_max_id is None:
+            return 0
+        if phase is None and raw_max_id is None:
+            return 0
+
         if phase is None:
             cursor.execute("SELECT 1 FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=1 LIMIT 1",
                            (day, next_day))
@@ -963,26 +1008,36 @@ def db_summarize_day(auth, day, verbose=False, reset_partial_summary=False):
                 raise RuntimeError(
                     f"{day:%Y-%m-%d} has both raw and summary rows; "
                     "rerun with --reset_partial_summary after verifying the raw logs")
+        if phase in (None, "complete"):
             cmd = ("INSERT INTO downloads (did, remote_ipaddr, user_agent_id, dtime, bytes_sent, summary) "
                    "SELECT did, remote_ipaddr, user_agent_id, DATE(dtime), SUM(bytes_sent), 1 "
                    "FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=0 "
-                   "GROUP BY did, remote_ipaddr, user_agent_id, DATE(dtime)")
+                   "AND id>%s AND id<=%s GROUP BY did, remote_ipaddr, user_agent_id, DATE(dtime)")
             db.conn.begin()
             try:
-                cursor.execute(cmd, (day, next_day))
+                cursor.execute(cmd, (day, next_day, processed_through_id, raw_max_id))
                 grouped_rows = cursor.rowcount
-                cursor.execute(f"INSERT INTO {SUMMARY_STATE_TABLE} (summary_day, phase) VALUES (%s, 'prepared')",
-                               (day,))
+                if phase is None:
+                    cursor.execute(f"INSERT INTO {SUMMARY_STATE_TABLE} "
+                                   "(summary_day, phase, processed_through_id, prepared_through_id) "
+                                   "VALUES (%s, 'prepared', %s, %s)",
+                                   (day, processed_through_id, raw_max_id))
+                else:
+                    cursor.execute(f"UPDATE {SUMMARY_STATE_TABLE} SET phase='prepared', "
+                                   "prepared_through_id=%s WHERE summary_day=%s",
+                                   (raw_max_id, day))
                 db.conn.commit()
                 logging.info("prepared %s summary rows for %s", grouped_rows, day.isoformat())
             except Exception:
                 db.conn.rollback()
                 raise
             phase = "prepared"
-
-        if phase == "complete":
-            return 0
+            prepared_through_id = raw_max_id
         if phase != "prepared":
+            if phase == "legacy_prepared":
+                raise RuntimeError(
+                    f"{day:%Y-%m-%d} was prepared by a legacy journal without a raw-ID boundary; "
+                    "verify the raw logs and repair it explicitly")
             raise RuntimeError(f"unexpected summary phase {phase!r} for {day:%Y-%m-%d}")
 
         deleted = 0
@@ -992,8 +1047,9 @@ def db_summarize_day(auth, day, verbose=False, reset_partial_summary=False):
             try:
                 cursor.execute(
                     f"DELETE FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=0 "
+                    "AND id>%s AND id<=%s "
                     f"LIMIT {SUMMARY_DELETE_BATCH_SIZE}",
-                    (day, next_day))
+                    (day, next_day, processed_through_id, prepared_through_id))
                 batch_rows = cursor.rowcount
                 db.conn.commit()
             except Exception:
@@ -1009,7 +1065,8 @@ def db_summarize_day(auth, day, verbose=False, reset_partial_summary=False):
 
         db.conn.begin()
         try:
-            cursor.execute(f"UPDATE {SUMMARY_STATE_TABLE} SET phase='complete' WHERE summary_day=%s", (day,))
+            cursor.execute(f"UPDATE {SUMMARY_STATE_TABLE} SET phase='complete', "
+                           "processed_through_id=prepared_through_id WHERE summary_day=%s", (day,))
             db.conn.commit()
         except Exception:
             db.conn.rollback()
@@ -1106,6 +1163,8 @@ def setup_parser():
     parser.add_argument("--threads", "-j", type=int, default=DEFAULT_THREADS)
     parser.add_argument("--limit", type=int, default=sys.maxsize,
                         help="Number of imports when reading from text files or s3 objects when reading from s3")
+    parser.add_argument("--s3_log_prefix", default='',
+                        help="Only ingest S3 log objects whose keys start with this prefix")
 
     # One of these options must be provided - tell me what to do
     g = parser.add_mutually_exclusive_group(required=True)
@@ -1176,6 +1235,8 @@ def main():
     if args.reset_partial_summary:
         if not args.download_summarize or not args.first or args.first != args.last:
             parser.error("--reset_partial_summary requires --download_summarize with one --first/--last day")
+    if args.s3_log_prefix and not args.s3_logs_download_ingest_and_save:
+        parser.error("--s3_log_prefix requires --s3_logs_download_ingest_and_save")
 
 
     if args.ignore_keys:
@@ -1233,7 +1294,8 @@ def main():
             hash_s3prefix(auth, args.hash_s3prefix, threads=args.threads, timeout=args.timeout)
         elif args.s3_logs_download_ingest_and_save:
             try:
-                s3_logs_download_ingest_and_save(auth, args.threads, args.limit)
+                s3_logs_download_ingest_and_save(auth, args.threads, args.limit,
+                                                  prefix=args.s3_log_prefix)
             except KeyboardInterrupt as e:
                 print(e,file=sys.stderr)
             if args.verbose:
