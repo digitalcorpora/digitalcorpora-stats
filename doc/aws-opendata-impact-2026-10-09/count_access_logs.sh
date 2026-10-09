@@ -17,6 +17,7 @@ trap 'rm -rf "$work"' EXIT
 sort_args=(-S 64M -T "$work" -s -u -k1,1)
 if sort --version >/dev/null 2>&1; then sort_args+=(--parallel=1); fi
 extract() {
+if [[ -n ${LOG_EXTRACTOR:-} ]]; then "$LOG_EXTRACTOR" "$@"; return; fi
 LC_ALL=C awk -F '"' '
   { split($1,p," "); split($3,r," ") }
   p[8] ~ /^(REST[.]GET[.]OBJECT|REST[.]COPY[.]PART_GET|WEBSITE[.]GET[.]OBJECT)$/ && r[1] ~ /^(200|206)$/ {

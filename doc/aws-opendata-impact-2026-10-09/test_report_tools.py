@@ -6,6 +6,7 @@
 # All fixtures are invented and temporary; no real address or password is embedded.
 # These tests do not contact Gmail, DreamHost, AWS, or the deployed responder.
 import json
+import os
 import stat
 import subprocess
 import tempfile
@@ -70,6 +71,10 @@ class ReportToolsTest(unittest.TestCase):
                 parts.append(str(part))
             merged = subprocess.run(['bash', scanner, '--merge', *parts], capture_output=True, text=True, check=True)
             self.assertEqual(merged.stdout, direct.stdout)
+            if os.environ.get('TEST_LOG_EXTRACTOR'):
+                fast = subprocess.run(['bash', scanner, str(path), str(other)], capture_output=True, text=True, check=True, env={**os.environ, 'LOG_EXTRACTOR': os.environ['TEST_LOG_EXTRACTOR']})
+                self.assertEqual(fast.stdout, direct.stdout)
+                self.assertEqual(fast.stderr, direct.stderr)
 
     def test_document_has_reviewed_content_and_rejects_ragged_table(self):
         with self.assertRaises(ValidationError): Table(headings=['a', 'b'], rows=[['only one']])

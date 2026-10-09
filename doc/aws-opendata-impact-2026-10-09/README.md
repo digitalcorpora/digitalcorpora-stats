@@ -8,10 +8,13 @@ These read-only tools support a report for Kyle Cook dated October 9, 2026. They
 
 Input files are `archive.mbox`, `tally-all.csv`, `tally.csv`, `t2.csv`, and selected `gmail-*.json` arrays (excluding `gmail-manual-search.json`). Each Gmail item has `id`, `headers` (`from`, `to`, `date`, `subject`), `plain`, and `html`; provide decoded MIME bodies. Historical messages without a complete form are extracted only from Gmail and require manual confirmation. No archive completeness is assumed.
 
+For very large access logs, `make fast-extractor` compiles an optional C parser. Select its absolute executable path with `LOG_EXTRACTOR`; otherwise the portable awk path remains the default. `CC` selects the compiler. Set `TEST_LOG_EXTRACTOR` to that executable when running `make check` to compare both parsers on the synthetic counting fixtures. These variables name executables and contain no credentials.
+
 Run through the supplied Makefile:
 
 ```sh
 make -C doc/aws-opendata-impact-2026-10-09 check PYTHON=/path/to/python
+make -C doc/aws-opendata-impact-2026-10-09 fast-extractor
 make -C doc/aws-opendata-impact-2026-10-09 count INPUT_LOG=/private/s3logs.2025.log
 make -C doc/aws-opendata-impact-2026-10-09 audit INPUT=/private/evidence OUTPUT=/private/audit DECISIONS=/private/decisions.json PYTHON=/path/to/python
 make -C doc/aws-opendata-impact-2026-10-09 mark-create NODE=/path/to/node
