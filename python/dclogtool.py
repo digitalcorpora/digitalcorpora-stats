@@ -51,6 +51,8 @@ NOTIFICATION_SIZE = 100_000_000
 PROGRESS_INTERVAL_SECONDS = 30
 SUMMARY_DELETE_BATCH_SIZE = 100_000
 SUMMARY_STATE_TABLE = "download_summarize_state"
+INGEST_TRANSACTION_RETRIES = 5
+MYSQL_RETRYABLE_ERROR_CODES = {1205, 1213}
 
 stats = defaultdict(int)
 STAT_S3_OBJECTS = 'S3_OBJECTS'
@@ -197,8 +199,8 @@ config_signed   = Config(connect_timeout=5, retries={'max_attempts': 4})
 ignore_keys = set()
 
 threads_started = 0
-# S3 reads may run concurrently, but MySQL batch transactions must not contend
-# for unique-index locks in downloadable and user_agents.
+# S3 reads may run concurrently.  This serializes the atomic download/checkpoint
+# transaction within one process; cross-process MySQL lock conflicts are retried.
 database_write_lock = threading.Lock()
 
 ################################################################
@@ -540,11 +542,37 @@ def get_ingest_state(auth, key, etag):
         cursor.close()
 
 
-def insert_logfile_obj_with_cursor(cursor, obj):
-    """Insert one download using the caller's transaction."""
-    cursor.execute("INSERT IGNORE INTO downloadable (s3key, bytes) VALUES (%s, %s)",
-                   (obj.key, obj.object_size))
-    cursor.execute("INSERT IGNORE INTO user_agents (user_agent) VALUES (%s)", (obj.user_agent,))
+def lookup_rows(downloads):
+    """Return deterministic lookup rows, preferring a known size for each S3 key."""
+    downloadable_by_key = {}
+    for obj in downloads:
+        if obj.key not in downloadable_by_key or (
+                downloadable_by_key[obj.key] is None and obj.object_size is not None):
+            downloadable_by_key[obj.key] = obj.object_size
+    downloadable_rows = sorted(downloadable_by_key.items())
+    user_agents = sorted(
+        {obj.user_agent for obj in downloads},
+        key=lambda agent: (agent is not None, (agent or "").casefold(), agent or ""))
+    return downloadable_rows, user_agents
+
+
+def insert_lookup_rows(cursor, downloads):
+    """Populate lookup rows in autocommit statements before a batch transaction."""
+    downloadable_rows, user_agents = lookup_rows(downloads)
+    if downloadable_rows:
+        cursor.execute(
+            "INSERT IGNORE INTO downloadable (s3key, bytes) VALUES "
+            + ", ".join(["(%s, %s)"] * len(downloadable_rows)),
+            [value for row in downloadable_rows for value in row])
+
+    if user_agents:
+        cursor.execute(
+            "INSERT IGNORE INTO user_agents (user_agent) VALUES "
+            + ", ".join(["(%s)"] * len(user_agents)), user_agents)
+
+
+def insert_download_with_cursor(cursor, obj):
+    """Insert one download using lookup rows prepared before the transaction."""
     cursor.execute(
         """INSERT INTO downloads (did, user_agent_id, remote_ipaddr, dtime, bytes_sent)
            SELECT downloadable.id, user_agents.id, %s, %s, %s
@@ -554,43 +582,66 @@ def insert_logfile_obj_with_cursor(cursor, obj):
     logging.debug("%s %s %s bytes_sent=%s", obj.dtime, obj.key, obj.remote_ip, obj.bytes_sent)
 
 
+def is_retryable_mysql_error(error):
+    """Return whether MySQL says this batch can be safely retried."""
+    return isinstance(error, pymysql.err.OperationalError) and error.args and \
+        error.args[0] in MYSQL_RETRYABLE_ERROR_CODES
+
+
 def commit_s3_log_batch(auth, key, etag, batch, next_byte):
-    """Atomically store a batch of parsed records and its source byte checkpoint."""
+    """Atomically store downloads and their checkpoint after idempotent lookups."""
     db = cached_db(auth)
     cursor = db.cursor()
     raw_download_lines = []
+    downloads = []
     count = 0
     bytes_sent = 0
-    with database_write_lock:
-        try:
-            db.conn.begin()
-            for line in batch:
-                try:
-                    obj = weblog.weblog.S3Log(line)
-                except S3LogException:
-                    continue
-                if obj.key in ignore_keys:
-                    continue
-                what = validate_obj(auth, obj)
-                stats[STAT_S3_RECORDS] += 1
-                if what == DOWNLOAD:
-                    insert_logfile_obj_with_cursor(cursor, obj)
-                    raw_download_lines.append(line)
-                    stats[STAT_S3_DOWNLOAD_RECORDS] += 1
-                    stats_update_dtime(obj.dtime)
-                    bytes_sent += obj.bytes_sent or 0
-                    count += 1
-            cursor.execute(
-                """UPDATE s3_log_ingest_state SET next_byte=%s
-                   WHERE s3key=%s AND etag=%s AND completed=0""",
-                (next_byte, key, etag))
-            if cursor.rowcount != 1:
-                raise RuntimeError(f"lost checkpoint for S3 log {key}")
-            db.conn.commit()
-        except Exception:
-            db.conn.rollback()
-            cursor.close()
-            raise
+    try:
+        for line in batch:
+            try:
+                obj = weblog.weblog.S3Log(line)
+            except S3LogException:
+                continue
+            if obj.key in ignore_keys:
+                continue
+            what = validate_obj(auth, obj)
+            stats[STAT_S3_RECORDS] += 1
+            if what == DOWNLOAD:
+                downloads.append(obj)
+                raw_download_lines.append(line)
+                stats[STAT_S3_DOWNLOAD_RECORDS] += 1
+                stats_update_dtime(obj.dtime)
+                bytes_sent += obj.bytes_sent or 0
+                count += 1
+
+        for attempt in range(INGEST_TRANSACTION_RETRIES):
+            try:
+                # Lookup rows are independently committed.  If a later atomic
+                # transaction fails, extra lookup rows are harmless and retryable.
+                insert_lookup_rows(cursor, downloads)
+                with database_write_lock:
+                    db.conn.begin()
+                    for obj in downloads:
+                        insert_download_with_cursor(cursor, obj)
+                    cursor.execute(
+                        """UPDATE s3_log_ingest_state SET next_byte=%s
+                           WHERE s3key=%s AND etag=%s AND completed=0""",
+                        (next_byte, key, etag))
+                    if cursor.rowcount != 1:
+                        raise RuntimeError(f"lost checkpoint for S3 log {key}")
+                    db.conn.commit()
+                break
+            except Exception as error:
+                db.conn.rollback()
+                if not is_retryable_mysql_error(error) or attempt + 1 == INGEST_TRANSACTION_RETRIES:
+                    raise
+                delay = 0.05 * (attempt + 1)
+                logging.warning("retrying S3 batch after MySQL error %s in %.2fs", error.args[0], delay)
+                time.sleep(delay)
+    except Exception:
+        db.conn.rollback()
+        cursor.close()
+        raise
     cursor.close()
     progress_reporter.committed(len(batch), count, bytes_sent)
     return count, raw_download_lines

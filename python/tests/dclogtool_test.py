@@ -11,6 +11,7 @@ from os.path import abspath,dirname,basename
 sys.path.append( dirname(dirname( abspath( __file__ ))))
 
 import datetime
+from types import SimpleNamespace
 from dateutil.tz import tzutc
 import pytest
 import dclogtool
@@ -57,3 +58,14 @@ def test_s3_log_prefix_is_available_for_ingestion():
     args = dclogtool.setup_parser().parse_args([
         '--s3_logs_download_ingest_and_save', '--s3_log_prefix', '2026-09-22', '--env', '--prod'])
     assert args.s3_log_prefix == '2026-09-22'
+
+
+def test_lookup_rows_handles_unknown_and_known_sizes_for_one_key():
+    downloads = [
+        SimpleNamespace(key='corpora/a.zip', object_size=None, user_agent='Browser'),
+        SimpleNamespace(key='corpora/a.zip', object_size=42, user_agent='browser'),
+        SimpleNamespace(key='corpora/b.zip', object_size=None, user_agent=None),
+    ]
+    downloadable_rows, user_agents = dclogtool.lookup_rows(downloads)
+    assert downloadable_rows == [('corpora/a.zip', 42), ('corpora/b.zip', None)]
+    assert user_agents == [None, 'Browser', 'browser']
