@@ -1,5 +1,7 @@
 SHELL=bash
 PYTHON_DIR=python
+# DreamHost targets source $HOME/dbwriter.bash for DBWRITER_HOSTNAME,
+# DBWRITER_USERNAME, and DBWRITER_PASSWORD. AWS credentials come from the AWS SDK.
 
 pylint:
 	cd $(PYTHON_DIR); make pylint

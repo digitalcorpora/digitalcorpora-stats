@@ -1,3 +1,0 @@
-[submodule "python/ctools"]
-	path = python/ctools
-	url = https://github.com/simsong/ctools.git

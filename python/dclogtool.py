@@ -40,9 +40,9 @@ from weblog.weblog import S3LogException
 
 import aws_secrets
 
-from ctools import dbfile
-from ctools import clogging
-import ctools.lock
+from dcstats_vendor import database as dbsupport
+from dcstats_vendor import logging_support
+from dcstats_vendor import locking
 
 MULTIPROCESSING = False
 DELETE_IN_BACKGROUND = False
@@ -322,11 +322,11 @@ def import_s3obj(obj):
     cmd  = "INSERT INTO downloadable (s3key,bytes,mtime,etag) VALUES (%s,%s,%s,%s)"
     vals = (s3key, obj['Size'], obj['LastModified'], obj['ETag'])
     try:
-        dbfile.DBMySQL.csfr(auth, cmd, vals, nolog=[1062])
+        dbsupport.DBMySQL.csfr(auth, cmd, vals, nolog=[1062])
     except pymysql.err.IntegrityError as e:
         if e.args[0]==1062:
             # It already exists. If the ETag hasn't changed and we have both sha2_256 and sha3_256, just return
-            rows = dbfile.DBMySQL.csfr(auth, "SELECT ETag FROM downloadable WHERE s3key=%s AND (sha2_256 IS NOT NULL) AND (sha3_256 IS NOT NULL)", (s3key,))
+            rows = dbsupport.DBMySQL.csfr(auth, "SELECT ETag FROM downloadable WHERE s3key=%s AND (sha2_256 IS NOT NULL) AND (sha3_256 IS NOT NULL)", (s3key,))
             if len(rows)==1 and rows[0][0]==obj['ETag']:
                 logging.info('ETag matches; will not update %s', s3key)
                 return None
@@ -396,7 +396,7 @@ def import_s3obj(obj):
     # Update the database. Remember, every column except the key may have changed.
     cmd = "update downloadable set ETag=%s, mtime=%s, bytes=%s, sha2_256=%s, sha3_256=%s where s3key=%s"
     vals = (o2['ETag'], o2['LastModified'], bytes_hashed, sha2_256.hexdigest(), sha3_256.hexdigest(), s3key)
-    dbfile.DBMySQL.csfr(auth, cmd, vals)
+    dbsupport.DBMySQL.csfr(auth, cmd, vals)
     logging.info('updated %s.  %d bytes, %6.2f seconds.  (%d Mb/sec)', s3key, bytes_hashed, (t1 -t0), (bytes_hashed /1000000) / (t1 -t0))
     return s3key
 
@@ -412,7 +412,7 @@ def hash_s3prefix(auth, Prefix, *, threads=40, timeout=DEFAULT_TIMEOUT):
     # We need to use our own auth because we don't want it activated
     auth2 = copy.deepcopy(auth)
     lk = p.path +"%"
-    rows = dbfile.DBMySQL.csfr(auth2,
+    rows = dbsupport.DBMySQL.csfr(auth2,
                                """select s3key,etag,mtime from downloadable
                                WHERE s3key LIKE %s AND (sha2_256 IS NOT NULL) AND (sha3_256 IS NOT NULL)
                                """, (lk,))
@@ -436,7 +436,7 @@ def hash_s3prefix(auth, Prefix, *, threads=40, timeout=DEFAULT_TIMEOUT):
                 if t1!=t2:
                     logging.info("Updating mtime in database for %s etag %s from %s --> %s ",
                                  obj['Key'], obj['ETag'], t2, t1)
-                    dbfile.DBMySQL.csfr(auth2,
+                    dbsupport.DBMySQL.csfr(auth2,
                                         "UPDATE downloadable SET mtime=%s WHERE s3key=%s AND etag=%s",
                                         (t1, obj['Key'], obj['ETag']))
                 continue
@@ -509,7 +509,7 @@ CREATE TABLE IF NOT EXISTS s3_log_ingest_state (
 
 def ensure_ingest_state_schema(auth):
     """Create the small, durable checkpoint table used for S3 access logs."""
-    dbfile.DBMySQL.csfr(auth, INGEST_STATE_SCHEMA)
+    dbsupport.DBMySQL.csfr(auth, INGEST_STATE_SCHEMA)
 
 
 def cached_db(auth):
@@ -517,7 +517,7 @@ def cached_db(auth):
     try:
         return auth.cache_get()
     except KeyError:
-        db = dbfile.DBMySQL(auth)
+        db = dbsupport.DBMySQL(auth)
         auth.cache_store(db)
         return db
 
@@ -649,7 +649,7 @@ def commit_s3_log_batch(auth, key, etag, batch, next_byte):
 
 def mark_s3_log_completed(auth, key, etag):
     """Commit completion before deleting the source S3 object."""
-    dbfile.DBMySQL.csfr(
+    dbsupport.DBMySQL.csfr(
         auth,
         """UPDATE s3_log_ingest_state SET completed=1
            WHERE s3key=%s AND etag=%s""",
@@ -662,21 +662,21 @@ def insert_logfile_obj_into_db(auth, obj):
     We can't get away from the subselects due to threading issues.
     """
     if (obj.key,obj.object_size) not in ingested_s3key:
-        dbfile.DBMySQL.csfr(auth,
+        dbsupport.DBMySQL.csfr(auth,
                             """INSERT INTO downloadable (s3key, bytes) VALUES (%s,%s) """,
                             (obj.key, obj.object_size), ignore=[1062])
         ingested_s3key.add((obj.key, obj.object_size))
 
     # Make sure the browser is in the databse
     if obj.user_agent not in ingested_user_agent:
-        dbfile.DBMySQL.csfr(auth,
+        dbsupport.DBMySQL.csfr(auth,
                             """INSERT INTO user_agents (user_agent) VALUES (%s) """,
                             (obj.user_agent,), ignore=[1062])
         ingested_user_agent.add(obj.user_agent)
 
 
     # Now INSERT the file into the table
-    dbfile.DBMySQL.csfr(auth,
+    dbsupport.DBMySQL.csfr(auth,
                         """
                         INSERT INTO downloads (did, user_agent_id, remote_ipaddr, dtime, bytes_sent)
                         VALUES ((select id from downloadable where s3key=%s),
@@ -931,7 +931,7 @@ def db_copy( auth ):
     This was created because I accidentally committed to the production database.
     There are 17,000 transactions and this ran in less than a minute.
     """
-    db = dbfile.DBMySQL(auth)
+    db = dbsupport.DBMySQL(auth)
     c = db.cursor()
     c.execute(
         """
@@ -958,7 +958,7 @@ def db_copy( auth ):
     print("total:",count)
 
 def db_stats( auth ):
-    db = dbfile.DBMySQL(auth)
+    db = dbsupport.DBMySQL(auth)
     def show_query(message, query):
         c = db.cursor()
         c.execute(query)
@@ -1011,7 +1011,7 @@ def db_summarize_day(auth, day, verbose=False, reset_partial_summary=False):
     aggregated, and a completed day can summarize a later raw-ID range.
     """
     next_day = day + datetime.timedelta(days=1)
-    db = dbfile.DBMySQL(auth)
+    db = dbsupport.DBMySQL(auth)
     cursor = db.cursor()
     lock_name = f"download-summarize-{day:%Y-%m-%d}"
     try:
@@ -1145,7 +1145,7 @@ def db_download_summarize(auth, first, last, verbose=False, max_days=None, optim
     if saved and optimize:
         if verbose:
             print("optimizing")
-        dbfile.DBMySQL.csfr(auth, "optimize table downloads")
+        dbsupport.DBMySQL.csfr(auth, "optimize table downloads")
 
 
 class TimeoutException(Exception):
@@ -1156,7 +1156,7 @@ def timeout_handler(num, stack):
     raise TimeoutException()
 
 def db_gc( auth, url ):
-    db = dbfile.DBMySQL( auth )
+    db = dbsupport.DBMySQL( auth )
     c = db.cursor()
     c.execute("SELECT s3key, id FROM downloadable")
     s3keys_in_db = {row[0]:row[1] for row in c.fetchall() }
@@ -1259,16 +1259,16 @@ def setup_parser():
 
     parser.add_argument("--ignore_keys",help="path names to ignore")
 
-    clogging.add_argument(parser)
+    logging_support.add_argument(parser)
     return parser
 
 def main():
     t0 = time.time()
     parser = setup_parser()
     args = parser.parse_args()
-    clogging.setup(args.loglevel,
-                   log_format=clogging.LOG_FORMAT.replace("%(message)s",
-                                                          "%(thread)d %(message)s"))
+    logging_support.setup(args.loglevel,
+                          log_format=logging_support.LOG_FORMAT.replace("%(message)s",
+                                                                         "%(thread)d %(message)s"))
     if args.verbose:
         logging.getLogger().setLevel(logging.INFO)
 
@@ -1299,14 +1299,14 @@ def main():
     # Select the authentication approach
     if args.aws:
         s = aws_secrets.get_secret()
-        auth = dbfile.DBMySQLAuth(host=s['host'],
+        auth = dbsupport.DBMySQLAuth(host=s['host'],
                                   database=database,
                                   user=s['username'],
                                   password=s['password'],
                                   debug=args.debug)
 
     elif args.env:
-        auth = dbfile.DBMySQLAuth(host=os.environ['DBWRITER_HOSTNAME'],
+        auth = dbsupport.DBMySQLAuth(host=os.environ['DBWRITER_HOSTNAME'],
                                   database=database,
                                   user=os.environ['DBWRITER_USERNAME'],
                                   password=os.environ['DBWRITER_PASSWORD'],
@@ -1324,12 +1324,12 @@ def main():
         if really[0]!='y':
             print("Will not wipe")
             sys.exit(1)
-        db = dbfile.DBMySQL(auth)
+        db = dbsupport.DBMySQL(auth)
         db.create_schema(open("schema.sql", "r").read())
 
     # Don't allow another copy to run the script
     if not args.nolock:
-        ctools.lock.lock_script()
+        locking.lock_script()
 
     # Do what we are supposed to do
     #signal.signal(signal.SIGALRM,timeout_handler)
@@ -1361,12 +1361,12 @@ def main():
             db_stats( auth )
         elif args.optimize_downloads:
             logging.info("optimizing downloads")
-            dbfile.DBMySQL.csfr(auth, "OPTIMIZE TABLE downloads")
+            dbsupport.DBMySQL.csfr(auth, "OPTIMIZE TABLE downloads")
 
         if args.download_summarize:
             stable_last = datetime.datetime.utcnow().date() - datetime.timedelta(days=1)
             if args.first==None:
-                rows = dbfile.DBMySQL.csfr(
+                rows = dbsupport.DBMySQL.csfr(
                     auth,
                     "SELECT date(dtime) FROM downloads WHERE summary=0 AND dtime<%s ORDER BY dtime LIMIT 1",
                     (stable_last + datetime.timedelta(days=1),))
@@ -1380,7 +1380,7 @@ def main():
                 if args.stable_only:
                     last = stable_last
                 else:
-                    rows = dbfile.DBMySQL.csfr(auth, "SELECT date(dtime) FROM downloads WHERE summary=0 ORDER BY dtime DESC LIMIT 1")
+                    rows = dbsupport.DBMySQL.csfr(auth, "SELECT date(dtime) FROM downloads WHERE summary=0 ORDER BY dtime DESC LIMIT 1")
                     if not rows:
                         logging.info("no unsummarized downloads")
                         return

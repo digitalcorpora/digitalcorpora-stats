@@ -11,10 +11,12 @@ from os.path import abspath,dirname,basename
 sys.path.append( dirname(dirname( abspath( __file__ ))))
 
 import datetime
+import logging
 from types import SimpleNamespace
 from dateutil.tz import tzutc
 import pytest
 import dclogtool
+from dcstats_vendor import logging_support
 
 S3TEST_URL = 's3://digitalcorpora/tests/'
 
@@ -69,3 +71,20 @@ def test_lookup_rows_handles_unknown_and_known_sizes_for_one_key():
     downloadable_rows, user_agents = dclogtool.lookup_rows(downloads)
     assert downloadable_rows == [('corpora/a.zip', 42), ('corpora/b.zip', None)]
     assert user_agents == [None, 'Browser', 'browser']
+
+
+def test_logging_support_lowers_an_existing_root_handler_level():
+    root = logging.getLogger()
+    original_level = root.level
+    original_configured = logging_support._configured
+    handler = logging.NullHandler()
+    root.addHandler(handler)
+    try:
+        root.setLevel(logging.WARNING)
+        logging_support._configured = False
+        logging_support.setup("INFO")
+        assert root.getEffectiveLevel() == logging.INFO
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(original_level)
+        logging_support._configured = original_configured
