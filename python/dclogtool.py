@@ -542,6 +542,18 @@ def get_ingest_state(auth, key, etag):
         cursor.close()
 
 
+def checkpoint_completion_needed(offset, size):
+    """Return whether a fully written S3 log needs only finalization.
+
+    ``next_byte`` is committed with each batch of download rows.  A process can
+    stop after committing the final batch but before setting ``completed``.  In
+    that state, re-reading at ``size`` would make S3 reject the empty range.
+    """
+    if offset > size:
+        raise RuntimeError(f"S3 log checkpoint is beyond object size: {offset} > {size}")
+    return offset == size
+
+
 def lookup_rows(downloads):
     """Return deterministic lookup rows, preferring a known size for each S3 key."""
     downloadable_by_key = {}
@@ -788,7 +800,11 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, s3_obj):
     assert key is not None
     assert isinstance(key, str)
     offset, completed = get_ingest_state(auth, key, etag)
-    if completed:
+    checkpoint_at_end = checkpoint_completion_needed(offset, size)
+    if completed or checkpoint_at_end:
+        if not completed:
+            logging.info("finalizing fully checkpointed S3 log %s", key)
+            mark_s3_log_completed(auth, key, etag)
         logging.info("deleting completed S3 log %s", key)
         s3_delete_object(Bucket=S3_LOG_BUCKET, Key=key)
         return 0

@@ -62,6 +62,13 @@ def test_s3_log_prefix_is_available_for_ingestion():
     assert args.s3_log_prefix == '2026-09-22'
 
 
+def test_fully_checkpointed_s3_log_needs_finalization_not_a_range_read():
+    assert dclogtool.checkpoint_completion_needed(8192, 8192)
+    assert not dclogtool.checkpoint_completion_needed(4096, 8192)
+    with pytest.raises(RuntimeError, match="beyond object size"):
+        dclogtool.checkpoint_completion_needed(8193, 8192)
+
+
 def test_lookup_rows_handles_unknown_and_known_sizes_for_one_key():
     downloads = [
         SimpleNamespace(key='corpora/a.zip', object_size=None, user_agent='Browser'),
