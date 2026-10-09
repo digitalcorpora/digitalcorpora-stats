@@ -5,12 +5,23 @@ You can even run it in a specially-created VM.
 
 # Getting going on a new VM
 ```
-sudo yum install git emacs && git clone --recursive git@github.com:digitalcorpora/digitalcorpora-stats.git
+sudo yum install git emacs && git clone git@github.com:digitalcorpora/digitalcorpora-stats.git
 
 cd digitalcorpora-stats
 make install-dependencies
 make check
 ```
+
+The worker vendors its small MySQL, logging, and process-lock helpers in
+`python/dcstats_vendor/`; no Git submodule is required for deployment.
+
+## Environment
+
+The DreamHost Make targets source `$HOME/dbwriter.bash`, which supplies
+`DBWRITER_HOSTNAME`, `DBWRITER_USERNAME`, and `DBWRITER_PASSWORD`; the worker
+selects the `dcstats` or `dcstats_test` database itself. AWS access uses the
+standard AWS credential environment variables or the shared credentials file.
+Do not commit credential values.
 
 # Stats for the Digital Corpora website
 ## Functionality:

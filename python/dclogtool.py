@@ -40,15 +40,19 @@ from weblog.weblog import S3LogException
 
 import aws_secrets
 
-from ctools import dbfile
-from ctools import clogging
-import ctools.lock
+from dcstats_vendor import database as dbsupport
+from dcstats_vendor import logging_support
+from dcstats_vendor import locking
 
 MULTIPROCESSING = False
 DELETE_IN_BACKGROUND = False
 DEFAULT_THREADS = 20   # Good for a microvm
 NOTIFICATION_SIZE = 100_000_000
 PROGRESS_INTERVAL_SECONDS = 30
+SUMMARY_DELETE_BATCH_SIZE = 100_000
+SUMMARY_STATE_TABLE = "download_summarize_state"
+INGEST_TRANSACTION_RETRIES = 5
+MYSQL_RETRYABLE_ERROR_CODES = {1205, 1213}
 
 stats = defaultdict(int)
 STAT_S3_OBJECTS = 'S3_OBJECTS'
@@ -195,8 +199,8 @@ config_signed   = Config(connect_timeout=5, retries={'max_attempts': 4})
 ignore_keys = set()
 
 threads_started = 0
-# S3 reads may run concurrently, but MySQL batch transactions must not contend
-# for unique-index locks in downloadable and user_agents.
+# S3 reads may run concurrently.  This serializes the atomic download/checkpoint
+# transaction within one process; cross-process MySQL lock conflicts are retried.
 database_write_lock = threading.Lock()
 
 ################################################################
@@ -318,11 +322,11 @@ def import_s3obj(obj):
     cmd  = "INSERT INTO downloadable (s3key,bytes,mtime,etag) VALUES (%s,%s,%s,%s)"
     vals = (s3key, obj['Size'], obj['LastModified'], obj['ETag'])
     try:
-        dbfile.DBMySQL.csfr(auth, cmd, vals, nolog=[1062])
+        dbsupport.DBMySQL.csfr(auth, cmd, vals, nolog=[1062])
     except pymysql.err.IntegrityError as e:
         if e.args[0]==1062:
             # It already exists. If the ETag hasn't changed and we have both sha2_256 and sha3_256, just return
-            rows = dbfile.DBMySQL.csfr(auth, "SELECT ETag FROM downloadable WHERE s3key=%s AND (sha2_256 IS NOT NULL) AND (sha3_256 IS NOT NULL)", (s3key,))
+            rows = dbsupport.DBMySQL.csfr(auth, "SELECT ETag FROM downloadable WHERE s3key=%s AND (sha2_256 IS NOT NULL) AND (sha3_256 IS NOT NULL)", (s3key,))
             if len(rows)==1 and rows[0][0]==obj['ETag']:
                 logging.info('ETag matches; will not update %s', s3key)
                 return None
@@ -392,7 +396,7 @@ def import_s3obj(obj):
     # Update the database. Remember, every column except the key may have changed.
     cmd = "update downloadable set ETag=%s, mtime=%s, bytes=%s, sha2_256=%s, sha3_256=%s where s3key=%s"
     vals = (o2['ETag'], o2['LastModified'], bytes_hashed, sha2_256.hexdigest(), sha3_256.hexdigest(), s3key)
-    dbfile.DBMySQL.csfr(auth, cmd, vals)
+    dbsupport.DBMySQL.csfr(auth, cmd, vals)
     logging.info('updated %s.  %d bytes, %6.2f seconds.  (%d Mb/sec)', s3key, bytes_hashed, (t1 -t0), (bytes_hashed /1000000) / (t1 -t0))
     return s3key
 
@@ -408,7 +412,7 @@ def hash_s3prefix(auth, Prefix, *, threads=40, timeout=DEFAULT_TIMEOUT):
     # We need to use our own auth because we don't want it activated
     auth2 = copy.deepcopy(auth)
     lk = p.path +"%"
-    rows = dbfile.DBMySQL.csfr(auth2,
+    rows = dbsupport.DBMySQL.csfr(auth2,
                                """select s3key,etag,mtime from downloadable
                                WHERE s3key LIKE %s AND (sha2_256 IS NOT NULL) AND (sha3_256 IS NOT NULL)
                                """, (lk,))
@@ -432,7 +436,7 @@ def hash_s3prefix(auth, Prefix, *, threads=40, timeout=DEFAULT_TIMEOUT):
                 if t1!=t2:
                     logging.info("Updating mtime in database for %s etag %s from %s --> %s ",
                                  obj['Key'], obj['ETag'], t2, t1)
-                    dbfile.DBMySQL.csfr(auth2,
+                    dbsupport.DBMySQL.csfr(auth2,
                                         "UPDATE downloadable SET mtime=%s WHERE s3key=%s AND etag=%s",
                                         (t1, obj['Key'], obj['ETag']))
                 continue
@@ -505,7 +509,7 @@ CREATE TABLE IF NOT EXISTS s3_log_ingest_state (
 
 def ensure_ingest_state_schema(auth):
     """Create the small, durable checkpoint table used for S3 access logs."""
-    dbfile.DBMySQL.csfr(auth, INGEST_STATE_SCHEMA)
+    dbsupport.DBMySQL.csfr(auth, INGEST_STATE_SCHEMA)
 
 
 def cached_db(auth):
@@ -513,7 +517,7 @@ def cached_db(auth):
     try:
         return auth.cache_get()
     except KeyError:
-        db = dbfile.DBMySQL(auth)
+        db = dbsupport.DBMySQL(auth)
         auth.cache_store(db)
         return db
 
@@ -538,11 +542,49 @@ def get_ingest_state(auth, key, etag):
         cursor.close()
 
 
-def insert_logfile_obj_with_cursor(cursor, obj):
-    """Insert one download using the caller's transaction."""
-    cursor.execute("INSERT IGNORE INTO downloadable (s3key, bytes) VALUES (%s, %s)",
-                   (obj.key, obj.object_size))
-    cursor.execute("INSERT IGNORE INTO user_agents (user_agent) VALUES (%s)", (obj.user_agent,))
+def checkpoint_completion_needed(offset, size):
+    """Return whether a fully written S3 log needs only finalization.
+
+    ``next_byte`` is committed with each batch of download rows.  A process can
+    stop after committing the final batch but before setting ``completed``.  In
+    that state, re-reading at ``size`` would make S3 reject the empty range.
+    """
+    if offset > size:
+        raise RuntimeError(f"S3 log checkpoint is beyond object size: {offset} > {size}")
+    return offset == size
+
+
+def lookup_rows(downloads):
+    """Return deterministic lookup rows, preferring a known size for each S3 key."""
+    downloadable_by_key = {}
+    for obj in downloads:
+        if obj.key not in downloadable_by_key or (
+                downloadable_by_key[obj.key] is None and obj.object_size is not None):
+            downloadable_by_key[obj.key] = obj.object_size
+    downloadable_rows = sorted(downloadable_by_key.items())
+    user_agents = sorted(
+        {obj.user_agent for obj in downloads},
+        key=lambda agent: (agent is not None, (agent or "").casefold(), agent or ""))
+    return downloadable_rows, user_agents
+
+
+def insert_lookup_rows(cursor, downloads):
+    """Populate lookup rows in autocommit statements before a batch transaction."""
+    downloadable_rows, user_agents = lookup_rows(downloads)
+    if downloadable_rows:
+        cursor.execute(
+            "INSERT IGNORE INTO downloadable (s3key, bytes) VALUES "
+            + ", ".join(["(%s, %s)"] * len(downloadable_rows)),
+            [value for row in downloadable_rows for value in row])
+
+    if user_agents:
+        cursor.execute(
+            "INSERT IGNORE INTO user_agents (user_agent) VALUES "
+            + ", ".join(["(%s)"] * len(user_agents)), user_agents)
+
+
+def insert_download_with_cursor(cursor, obj):
+    """Insert one download using lookup rows prepared before the transaction."""
     cursor.execute(
         """INSERT INTO downloads (did, user_agent_id, remote_ipaddr, dtime, bytes_sent)
            SELECT downloadable.id, user_agents.id, %s, %s, %s
@@ -552,43 +594,66 @@ def insert_logfile_obj_with_cursor(cursor, obj):
     logging.debug("%s %s %s bytes_sent=%s", obj.dtime, obj.key, obj.remote_ip, obj.bytes_sent)
 
 
+def is_retryable_mysql_error(error):
+    """Return whether MySQL says this batch can be safely retried."""
+    return isinstance(error, pymysql.err.OperationalError) and error.args and \
+        error.args[0] in MYSQL_RETRYABLE_ERROR_CODES
+
+
 def commit_s3_log_batch(auth, key, etag, batch, next_byte):
-    """Atomically store a batch of parsed records and its source byte checkpoint."""
+    """Atomically store downloads and their checkpoint after idempotent lookups."""
     db = cached_db(auth)
     cursor = db.cursor()
     raw_download_lines = []
+    downloads = []
     count = 0
     bytes_sent = 0
-    with database_write_lock:
-        try:
-            db.conn.begin()
-            for line in batch:
-                try:
-                    obj = weblog.weblog.S3Log(line)
-                except S3LogException:
-                    continue
-                if obj.key in ignore_keys:
-                    continue
-                what = validate_obj(auth, obj)
-                stats[STAT_S3_RECORDS] += 1
-                if what == DOWNLOAD:
-                    insert_logfile_obj_with_cursor(cursor, obj)
-                    raw_download_lines.append(line)
-                    stats[STAT_S3_DOWNLOAD_RECORDS] += 1
-                    stats_update_dtime(obj.dtime)
-                    bytes_sent += obj.bytes_sent or 0
-                    count += 1
-            cursor.execute(
-                """UPDATE s3_log_ingest_state SET next_byte=%s
-                   WHERE s3key=%s AND etag=%s AND completed=0""",
-                (next_byte, key, etag))
-            if cursor.rowcount != 1:
-                raise RuntimeError(f"lost checkpoint for S3 log {key}")
-            db.conn.commit()
-        except Exception:
-            db.conn.rollback()
-            cursor.close()
-            raise
+    try:
+        for line in batch:
+            try:
+                obj = weblog.weblog.S3Log(line)
+            except S3LogException:
+                continue
+            if obj.key in ignore_keys:
+                continue
+            what = validate_obj(auth, obj)
+            stats[STAT_S3_RECORDS] += 1
+            if what == DOWNLOAD:
+                downloads.append(obj)
+                raw_download_lines.append(line)
+                stats[STAT_S3_DOWNLOAD_RECORDS] += 1
+                stats_update_dtime(obj.dtime)
+                bytes_sent += obj.bytes_sent or 0
+                count += 1
+
+        for attempt in range(INGEST_TRANSACTION_RETRIES):
+            try:
+                # Lookup rows are independently committed.  If a later atomic
+                # transaction fails, extra lookup rows are harmless and retryable.
+                insert_lookup_rows(cursor, downloads)
+                with database_write_lock:
+                    db.conn.begin()
+                    for obj in downloads:
+                        insert_download_with_cursor(cursor, obj)
+                    cursor.execute(
+                        """UPDATE s3_log_ingest_state SET next_byte=%s
+                           WHERE s3key=%s AND etag=%s AND completed=0""",
+                        (next_byte, key, etag))
+                    if cursor.rowcount != 1:
+                        raise RuntimeError(f"lost checkpoint for S3 log {key}")
+                    db.conn.commit()
+                break
+            except Exception as error:
+                db.conn.rollback()
+                if not is_retryable_mysql_error(error) or attempt + 1 == INGEST_TRANSACTION_RETRIES:
+                    raise
+                delay = 0.05 * (attempt + 1)
+                logging.warning("retrying S3 batch after MySQL error %s in %.2fs", error.args[0], delay)
+                time.sleep(delay)
+    except Exception:
+        db.conn.rollback()
+        cursor.close()
+        raise
     cursor.close()
     progress_reporter.committed(len(batch), count, bytes_sent)
     return count, raw_download_lines
@@ -596,7 +661,7 @@ def commit_s3_log_batch(auth, key, etag, batch, next_byte):
 
 def mark_s3_log_completed(auth, key, etag):
     """Commit completion before deleting the source S3 object."""
-    dbfile.DBMySQL.csfr(
+    dbsupport.DBMySQL.csfr(
         auth,
         """UPDATE s3_log_ingest_state SET completed=1
            WHERE s3key=%s AND etag=%s""",
@@ -609,21 +674,21 @@ def insert_logfile_obj_into_db(auth, obj):
     We can't get away from the subselects due to threading issues.
     """
     if (obj.key,obj.object_size) not in ingested_s3key:
-        dbfile.DBMySQL.csfr(auth,
+        dbsupport.DBMySQL.csfr(auth,
                             """INSERT INTO downloadable (s3key, bytes) VALUES (%s,%s) """,
                             (obj.key, obj.object_size), ignore=[1062])
         ingested_s3key.add((obj.key, obj.object_size))
 
     # Make sure the browser is in the databse
     if obj.user_agent not in ingested_user_agent:
-        dbfile.DBMySQL.csfr(auth,
+        dbsupport.DBMySQL.csfr(auth,
                             """INSERT INTO user_agents (user_agent) VALUES (%s) """,
                             (obj.user_agent,), ignore=[1062])
         ingested_user_agent.add(obj.user_agent)
 
 
     # Now INSERT the file into the table
-    dbfile.DBMySQL.csfr(auth,
+    dbsupport.DBMySQL.csfr(auth,
                         """
                         INSERT INTO downloads (did, user_agent_id, remote_ipaddr, dtime, bytes_sent)
                         VALUES ((select id from downloadable where s3key=%s),
@@ -735,7 +800,11 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, s3_obj):
     assert key is not None
     assert isinstance(key, str)
     offset, completed = get_ingest_state(auth, key, etag)
-    if completed:
+    checkpoint_at_end = checkpoint_completion_needed(offset, size)
+    if completed or checkpoint_at_end:
+        if not completed:
+            logging.info("finalizing fully checkpointed S3 log %s", key)
+            mark_s3_log_completed(auth, key, etag)
         logging.info("deleting completed S3 log %s", key)
         s3_delete_object(Bucket=S3_LOG_BUCKET, Key=key)
         return 0
@@ -801,19 +870,27 @@ def s3_log_ingest(s3_logfile, s3_logfile_lock, auth, s3_obj):
 
 DIE_PARENT = "<<DIE PARENT>>"
 DIE_THREAD = "<<DIE THREAD>>"     # hopefully no S3Key with this
-def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize, timeout=DEFAULT_TIMEOUT):
+def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize, timeout=DEFAULT_TIMEOUT,
+                                     prefix=''):
     """Download an S3 logs and ingest them.
     Runs in the main thread.
     :param auth: authentication token to write to the database.
     :param threads: number of threads to use
+    :param prefix: ingest only S3 log objects whose keys start with this prefix
     """
     count = 0
     progress_reporter.reset()
-    logging.info("ingestion started; progress reports every %s seconds", PROGRESS_INTERVAL_SECONDS)
+    logging.info("ingestion started for prefix %r; progress reports every %s seconds",
+                 prefix, PROGRESS_INTERVAL_SECONDS)
     q  = queue.Queue(maxsize = threads*2)          # forward channel
     bc = queue.Queue()          # backchannel
 
-    s3_logfile      = open(S3_LOGFILE_PATH,"a")
+    logfile_path = S3_LOGFILE_PATH
+    if prefix:
+        # Parallel prefix workers must not concurrently append to one local audit log.
+        prefix_digest = hashlib.sha256(prefix.encode("utf-8")).hexdigest()[:16]
+        logfile_path = f"{S3_LOGFILE_PATH}.{prefix_digest}"
+    s3_logfile      = open(logfile_path,"a")
     s3_logfile_lock = threading.Lock()
     def worker():
         """Runs in the worker thread"""
@@ -841,7 +918,7 @@ def s3_logs_download_ingest_and_save(auth, threads=1, limit=sys.maxsize, timeout
         threading.Thread(target=worker, daemon=True).start()
     ensure_ingest_state_schema(auth)
     if True:
-        for (ct,obj) in enumerate( s3_get_objects( Bucket=S3_LOG_BUCKET, Prefix=''),1):
+        for (ct,obj) in enumerate(s3_get_objects(Bucket=S3_LOG_BUCKET, Prefix=prefix), 1):
             stats[STAT_S3_OBJECTS] += 1
             if count>limit:
                 break
@@ -870,7 +947,7 @@ def db_copy( auth ):
     This was created because I accidentally committed to the production database.
     There are 17,000 transactions and this ran in less than a minute.
     """
-    db = dbfile.DBMySQL(auth)
+    db = dbsupport.DBMySQL(auth)
     c = db.cursor()
     c.execute(
         """
@@ -897,7 +974,7 @@ def db_copy( auth ):
     print("total:",count)
 
 def db_stats( auth ):
-    db = dbfile.DBMySQL(auth)
+    db = dbsupport.DBMySQL(auth)
     def show_query(message, query):
         c = db.cursor()
         c.execute(query)
@@ -913,41 +990,170 @@ def logfile_opener(fname):
     else:
         return open(fname, "rt")
 
-def db_summarize_day( auth, day, verbose=False):
-    """Note: This could be updated to capture the speed of the download or the duration of the download. But why bother?"""
-    if verbose:
-        print("summarize",day)
-    next_day = day + datetime.timedelta(days=1)
-    db = dbfile.DBMySQL(auth)
-    cursor = db.cursor()
-    before = dbfile.DBMySQL.csfr(auth, "SELECT count(*) from downloads where dtime>=%s AND dtime<%s", (day, next_day))
-    if verbose:
-        print("before:",before[0][0])
-
-    cmd = ("INSERT INTO downloads (did, remote_ipaddr, user_agent_id, dtime, bytes_sent, summary) "
-           "SELECT did, remote_ipaddr, user_agent_id, DATE(dtime), SUM(bytes_sent), 1 "
-           "FROM downloads "
-           "WHERE dtime>=%s AND dtime<%s AND summary=0 GROUP BY did, remote_ipaddr, user_agent_id, DATE(dtime)")
+def ensure_summary_state_table(cursor):
+    """Create the tiny journal that makes large daily summaries resumable."""
+    cursor.execute(
+        f"CREATE TABLE IF NOT EXISTS {SUMMARY_STATE_TABLE} ("
+        "summary_day DATE NOT NULL PRIMARY KEY, "
+        "phase VARCHAR(16) NOT NULL, "
+        "updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP "
+        "ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB")
+    cursor.execute("SELECT GET_LOCK('download-summary-schema-migration', 60)")
+    if cursor.fetchone()[0] != 1:
+        raise RuntimeError("could not acquire download-summary schema migration lock")
     try:
-        db.conn.begin()
-        cursor.execute(cmd, (day, next_day))
-        cursor.execute("DELETE FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=0", (day, next_day))
-        db.conn.commit()
-    except Exception:
-        db.conn.rollback()
-        raise
+        cursor.execute(f"SHOW COLUMNS FROM {SUMMARY_STATE_TABLE}")
+        column_names = {column[0] for column in cursor.fetchall()}
+        missing_boundaries = {"processed_through_id", "prepared_through_id"} - column_names
+        if missing_boundaries:
+            cursor.execute(f"SELECT COUNT(*) FROM {SUMMARY_STATE_TABLE} WHERE phase='prepared'")
+            if cursor.fetchone()[0]:
+                cursor.execute(f"UPDATE {SUMMARY_STATE_TABLE} SET phase='legacy_prepared' "
+                               "WHERE phase='prepared'")
+                cursor.connection.commit()
+            for name in missing_boundaries:
+                cursor.execute(f"ALTER TABLE {SUMMARY_STATE_TABLE} "
+                               f"ADD COLUMN {name} BIGINT UNSIGNED NOT NULL DEFAULT 0")
     finally:
-        cursor.close()
-    after = dbfile.DBMySQL.csfr(auth, "SELECT count(*) from downloads where dtime>=%s AND dtime<%s", (day, next_day))
-    if verbose:
-        print("after:",after[0][0])
-    return before[0][0] - after[0][0]
+        cursor.execute("SELECT RELEASE_LOCK('download-summary-schema-migration')")
 
-def db_download_summarize(auth, first, last, verbose=False, max_days=None, optimize=False):
+
+def db_summarize_day(auth, day, verbose=False, reset_partial_summary=False):
+    """Summarize one stable UTC day without a long, all-row delete statement.
+
+    A journal stores the inclusive raw-ID boundary captured by each pass.  The
+    grouped summary and that boundary commit together; later batches delete only
+    the captured IDs.  Thus retries cannot delete late arrivals that were not
+    aggregated, and a completed day can summarize a later raw-ID range.
+    """
+    next_day = day + datetime.timedelta(days=1)
+    db = dbsupport.DBMySQL(auth)
+    cursor = db.cursor()
+    lock_name = f"download-summarize-{day:%Y-%m-%d}"
+    try:
+        cursor.execute("SELECT GET_LOCK(%s, 0)", (lock_name,))
+        if cursor.fetchone()[0] != 1:
+            raise RuntimeError(f"summary already running for {day:%Y-%m-%d}")
+        ensure_summary_state_table(cursor)
+
+        cursor.execute(f"SELECT phase, processed_through_id, prepared_through_id "
+                       f"FROM {SUMMARY_STATE_TABLE} WHERE summary_day=%s", (day,))
+        row = cursor.fetchone()
+        if reset_partial_summary:
+            if row:
+                raise RuntimeError("cannot reset a journaled summary; resume it without --reset_partial_summary")
+            cursor.execute("SELECT 1 FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=0 LIMIT 1",
+                           (day, next_day))
+            if not cursor.fetchone():
+                raise RuntimeError("cannot reset a day with no raw rows")
+            db.conn.begin()
+            cursor.execute("DELETE FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=1",
+                           (day, next_day))
+            removed = cursor.rowcount
+            db.conn.commit()
+            logging.info("removed %s legacy summary rows for %s", removed, day.isoformat())
+
+            row = None
+
+        if row:
+            phase, processed_through_id, prepared_through_id = row
+        else:
+            phase, processed_through_id, prepared_through_id = None, 0, 0
+
+        cursor.execute("SELECT MAX(id) FROM downloads WHERE dtime>=%s AND dtime<%s "
+                       "AND summary=0 AND id>%s", (day, next_day, processed_through_id))
+        raw_max_id = cursor.fetchone()[0]
+        if phase == "complete" and raw_max_id is None:
+            return 0
+        if phase is None and raw_max_id is None:
+            return 0
+
+        if phase is None:
+            cursor.execute("SELECT 1 FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=1 LIMIT 1",
+                           (day, next_day))
+            if cursor.fetchone():
+                raise RuntimeError(
+                    f"{day:%Y-%m-%d} has both raw and summary rows; "
+                    "rerun with --reset_partial_summary after verifying the raw logs")
+        if phase in (None, "complete"):
+            cmd = ("INSERT INTO downloads (did, remote_ipaddr, user_agent_id, dtime, bytes_sent, summary) "
+                   "SELECT did, remote_ipaddr, user_agent_id, DATE(dtime), SUM(bytes_sent), 1 "
+                   "FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=0 "
+                   "AND id>%s AND id<=%s GROUP BY did, remote_ipaddr, user_agent_id, DATE(dtime)")
+            db.conn.begin()
+            try:
+                cursor.execute(cmd, (day, next_day, processed_through_id, raw_max_id))
+                grouped_rows = cursor.rowcount
+                if phase is None:
+                    cursor.execute(f"INSERT INTO {SUMMARY_STATE_TABLE} "
+                                   "(summary_day, phase, processed_through_id, prepared_through_id) "
+                                   "VALUES (%s, 'prepared', %s, %s)",
+                                   (day, processed_through_id, raw_max_id))
+                else:
+                    cursor.execute(f"UPDATE {SUMMARY_STATE_TABLE} SET phase='prepared', "
+                                   "prepared_through_id=%s WHERE summary_day=%s",
+                                   (raw_max_id, day))
+                db.conn.commit()
+                logging.info("prepared %s summary rows for %s", grouped_rows, day.isoformat())
+            except Exception:
+                db.conn.rollback()
+                raise
+            phase = "prepared"
+            prepared_through_id = raw_max_id
+        if phase != "prepared":
+            if phase == "legacy_prepared":
+                raise RuntimeError(
+                    f"{day:%Y-%m-%d} was prepared by a legacy journal without a raw-ID boundary; "
+                    "verify the raw logs and repair it explicitly")
+            raise RuntimeError(f"unexpected summary phase {phase!r} for {day:%Y-%m-%d}")
+
+        deleted = 0
+        batches = 0
+        while True:
+            db.conn.begin()
+            try:
+                cursor.execute(
+                    f"DELETE FROM downloads WHERE dtime>=%s AND dtime<%s AND summary=0 "
+                    "AND id>%s AND id<=%s "
+                    f"LIMIT {SUMMARY_DELETE_BATCH_SIZE}",
+                    (day, next_day, processed_through_id, prepared_through_id))
+                batch_rows = cursor.rowcount
+                db.conn.commit()
+            except Exception:
+                db.conn.rollback()
+                raise
+            if batch_rows == 0:
+                break
+            deleted += batch_rows
+            batches += 1
+            if batches == 1 or batches % 10 == 0:
+                logging.info("summarized %s: deleted %s raw rows in %s batches",
+                             day.isoformat(), deleted, batches)
+
+        db.conn.begin()
+        try:
+            cursor.execute(f"UPDATE {SUMMARY_STATE_TABLE} SET phase='complete', "
+                           "processed_through_id=prepared_through_id WHERE summary_day=%s", (day,))
+            db.conn.commit()
+        except Exception:
+            db.conn.rollback()
+            raise
+        if verbose:
+            print(f"summarize {day}: deleted {deleted} raw rows")
+        return deleted
+    finally:
+        try:
+            cursor.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+        finally:
+            cursor.close()
+
+def db_download_summarize(auth, first, last, verbose=False, max_days=None, optimize=False,
+                          reset_partial_summary=False):
     saved = 0
     days = 0
     while first<=last and (max_days is None or days < max_days):
-        saved += db_summarize_day(auth, first, verbose=verbose)
+        saved += db_summarize_day(auth, first, verbose=verbose,
+                                  reset_partial_summary=reset_partial_summary)
         first += datetime.timedelta(days=1)
         days += 1
     if verbose:
@@ -955,7 +1161,7 @@ def db_download_summarize(auth, first, last, verbose=False, max_days=None, optim
     if saved and optimize:
         if verbose:
             print("optimizing")
-        dbfile.DBMySQL.csfr(auth, "optimize table downloads")
+        dbsupport.DBMySQL.csfr(auth, "optimize table downloads")
 
 
 class TimeoutException(Exception):
@@ -966,7 +1172,7 @@ def timeout_handler(num, stack):
     raise TimeoutException()
 
 def db_gc( auth, url ):
-    db = dbfile.DBMySQL( auth )
+    db = dbsupport.DBMySQL( auth )
     c = db.cursor()
     c.execute("SELECT s3key, id FROM downloadable")
     s3keys_in_db = {row[0]:row[1] for row in c.fetchall() }
@@ -1024,6 +1230,8 @@ def setup_parser():
     parser.add_argument("--threads", "-j", type=int, default=DEFAULT_THREADS)
     parser.add_argument("--limit", type=int, default=sys.maxsize,
                         help="Number of imports when reading from text files or s3 objects when reading from s3")
+    parser.add_argument("--s3_log_prefix", default='',
+                        help="Only ingest S3 log objects whose keys start with this prefix")
 
     # One of these options must be provided - tell me what to do
     g = parser.add_mutually_exclusive_group(required=True)
@@ -1048,6 +1256,8 @@ def setup_parser():
                         help="maximum number of days to summarize, starting with the oldest")
     parser.add_argument("--stable_only", action='store_true',
                         help="do not summarize the current UTC day")
+    parser.add_argument("--reset_partial_summary", action='store_true',
+                        help="discard legacy summary rows before rebuilding one verified raw day")
     parser.add_argument("--optimize", action='store_true',
                         help="run OPTIMIZE TABLE after summarization")
     parser.add_argument("--timeout", default=3500, type=int, help="Timeout in seconds")
@@ -1065,16 +1275,16 @@ def setup_parser():
 
     parser.add_argument("--ignore_keys",help="path names to ignore")
 
-    clogging.add_argument(parser)
+    logging_support.add_argument(parser)
     return parser
 
 def main():
     t0 = time.time()
     parser = setup_parser()
     args = parser.parse_args()
-    clogging.setup(args.loglevel,
-                   log_format=clogging.LOG_FORMAT.replace("%(message)s",
-                                                          "%(thread)d %(message)s"))
+    logging_support.setup(args.loglevel,
+                          log_format=logging_support.LOG_FORMAT.replace("%(message)s",
+                                                                         "%(thread)d %(message)s"))
     if args.verbose:
         logging.getLogger().setLevel(logging.INFO)
 
@@ -1089,6 +1299,12 @@ def main():
         args.first=f"{args.year}-01-01"
         args.last =f"{args.year}-12-31"
 
+    if args.reset_partial_summary:
+        if not args.download_summarize or not args.first or args.first != args.last:
+            parser.error("--reset_partial_summary requires --download_summarize with one --first/--last day")
+    if args.s3_log_prefix and not args.s3_logs_download_ingest_and_save:
+        parser.error("--s3_log_prefix requires --s3_logs_download_ingest_and_save")
+
 
     if args.ignore_keys:
         with open(args.ignore_keys,"r") as f:
@@ -1099,14 +1315,14 @@ def main():
     # Select the authentication approach
     if args.aws:
         s = aws_secrets.get_secret()
-        auth = dbfile.DBMySQLAuth(host=s['host'],
+        auth = dbsupport.DBMySQLAuth(host=s['host'],
                                   database=database,
                                   user=s['username'],
                                   password=s['password'],
                                   debug=args.debug)
 
     elif args.env:
-        auth = dbfile.DBMySQLAuth(host=os.environ['DBWRITER_HOSTNAME'],
+        auth = dbsupport.DBMySQLAuth(host=os.environ['DBWRITER_HOSTNAME'],
                                   database=database,
                                   user=os.environ['DBWRITER_USERNAME'],
                                   password=os.environ['DBWRITER_PASSWORD'],
@@ -1124,12 +1340,12 @@ def main():
         if really[0]!='y':
             print("Will not wipe")
             sys.exit(1)
-        db = dbfile.DBMySQL(auth)
+        db = dbsupport.DBMySQL(auth)
         db.create_schema(open("schema.sql", "r").read())
 
     # Don't allow another copy to run the script
     if not args.nolock:
-        ctools.lock.lock_script()
+        locking.lock_script()
 
     # Do what we are supposed to do
     #signal.signal(signal.SIGALRM,timeout_handler)
@@ -1145,7 +1361,8 @@ def main():
             hash_s3prefix(auth, args.hash_s3prefix, threads=args.threads, timeout=args.timeout)
         elif args.s3_logs_download_ingest_and_save:
             try:
-                s3_logs_download_ingest_and_save(auth, args.threads, args.limit)
+                s3_logs_download_ingest_and_save(auth, args.threads, args.limit,
+                                                  prefix=args.s3_log_prefix)
             except KeyboardInterrupt as e:
                 print(e,file=sys.stderr)
             if args.verbose:
@@ -1160,12 +1377,12 @@ def main():
             db_stats( auth )
         elif args.optimize_downloads:
             logging.info("optimizing downloads")
-            dbfile.DBMySQL.csfr(auth, "OPTIMIZE TABLE downloads")
+            dbsupport.DBMySQL.csfr(auth, "OPTIMIZE TABLE downloads")
 
         if args.download_summarize:
             stable_last = datetime.datetime.utcnow().date() - datetime.timedelta(days=1)
             if args.first==None:
-                rows = dbfile.DBMySQL.csfr(
+                rows = dbsupport.DBMySQL.csfr(
                     auth,
                     "SELECT date(dtime) FROM downloads WHERE summary=0 AND dtime<%s ORDER BY dtime LIMIT 1",
                     (stable_last + datetime.timedelta(days=1),))
@@ -1179,7 +1396,7 @@ def main():
                 if args.stable_only:
                     last = stable_last
                 else:
-                    rows = dbfile.DBMySQL.csfr(auth, "SELECT date(dtime) FROM downloads WHERE summary=0 ORDER BY dtime DESC LIMIT 1")
+                    rows = dbsupport.DBMySQL.csfr(auth, "SELECT date(dtime) FROM downloads WHERE summary=0 ORDER BY dtime DESC LIMIT 1")
                     if not rows:
                         logging.info("no unsummarized downloads")
                         return
@@ -1190,7 +1407,8 @@ def main():
                 logging.info("no eligible unsummarized downloads")
                 return
             db_download_summarize(auth, first, last, verbose=args.verbose,
-                                  max_days=args.max_summarize_days, optimize=args.optimize)
+                                  max_days=args.max_summarize_days, optimize=args.optimize,
+                                  reset_partial_summary=args.reset_partial_summary)
             if args.verbose:
                 print("Running time1: ",int(time.time() - t0))
 

@@ -11,9 +11,12 @@ from os.path import abspath,dirname,basename
 sys.path.append( dirname(dirname( abspath( __file__ ))))
 
 import datetime
+import logging
+from types import SimpleNamespace
 from dateutil.tz import tzutc
 import pytest
 import dclogtool
+from dcstats_vendor import logging_support
 
 S3TEST_URL = 's3://digitalcorpora/tests/'
 
@@ -51,3 +54,44 @@ def test_setup_parser():
 def test_download_summarize_is_an_action():
     args = dclogtool.setup_parser().parse_args(['--download_summarize', '--env', '--prod'])
     assert args.download_summarize
+
+
+def test_s3_log_prefix_is_available_for_ingestion():
+    args = dclogtool.setup_parser().parse_args([
+        '--s3_logs_download_ingest_and_save', '--s3_log_prefix', '2026-09-22', '--env', '--prod'])
+    assert args.s3_log_prefix == '2026-09-22'
+
+
+def test_fully_checkpointed_s3_log_needs_finalization_not_a_range_read():
+    assert dclogtool.checkpoint_completion_needed(8192, 8192)
+    assert not dclogtool.checkpoint_completion_needed(4096, 8192)
+    with pytest.raises(RuntimeError, match="beyond object size"):
+        dclogtool.checkpoint_completion_needed(8193, 8192)
+
+
+def test_lookup_rows_handles_unknown_and_known_sizes_for_one_key():
+    downloads = [
+        SimpleNamespace(key='corpora/a.zip', object_size=None, user_agent='Browser'),
+        SimpleNamespace(key='corpora/a.zip', object_size=42, user_agent='browser'),
+        SimpleNamespace(key='corpora/b.zip', object_size=None, user_agent=None),
+    ]
+    downloadable_rows, user_agents = dclogtool.lookup_rows(downloads)
+    assert downloadable_rows == [('corpora/a.zip', 42), ('corpora/b.zip', None)]
+    assert user_agents == [None, 'Browser', 'browser']
+
+
+def test_logging_support_lowers_an_existing_root_handler_level():
+    root = logging.getLogger()
+    original_level = root.level
+    original_configured = logging_support._configured
+    handler = logging.NullHandler()
+    root.addHandler(handler)
+    try:
+        root.setLevel(logging.WARNING)
+        logging_support._configured = False
+        logging_support.setup("INFO")
+        assert root.getEffectiveLevel() == logging.INFO
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(original_level)
+        logging_support._configured = original_configured
