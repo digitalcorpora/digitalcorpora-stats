@@ -22,6 +22,16 @@ make check
 
 ## Design
 
+The October 2026 budget comparison, report builders, pricing evidence, and render
+outputs are in [Statistics options](doc/statistics-options-2026-10-09/README.md).
+[Storage Lens setup and history](doc/statistics-options-2026-10-09/STORAGE_LENS_SETUP.md)
+describes the proposed native aggregates and DreamHost publication path. Its report
+build overrides are `PYTHON`, `NODE`, and `DOCX_SKILL_DIR` (runtime and renderer paths;
+no credentials). This proposal has not been enabled in AWS.
+The [cross-account access CLI](doc/statistics-options-2026-10-09/STORAGE_LENS_ACCESS.md)
+creates a read-only viewing role when explicitly run. `AWS_PROFILE` selects its AWS
+CLI credentials and `AWS_REGION` selects its default Region; no credentials are saved.
+
 - Run as a daemon/system service so whenever a new log is created, it is automatically parsed, using something like a watch folder.
 - Reads database credentials from home directory.
 - Options will be set using a config file
