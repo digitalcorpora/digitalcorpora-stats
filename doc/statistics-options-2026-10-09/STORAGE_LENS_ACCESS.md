@@ -11,10 +11,12 @@ enabling Advanced, changing configuration, and reading exported S3 files are sep
 ## Run from the repository
 
 ```sh
-AWS_PROFILE=digitalcorpora make -C doc/statistics-options-2026-10-09 grant-storage-lens-access
+AWS_CONFIG_FILE="$HOME/.aws/config" AWS_PROFILE=digitalcorpora-admin make -C doc/statistics-options-2026-10-09 grant-storage-lens-access
 ```
 
-Replace `digitalcorpora` with your actual local CLI profile name. In AWS CloudShell,
+Replace `digitalcorpora-admin` with your actual Digital Corpora administrator
+profile name in your home AWS config. The project SSO profiles are read-only and
+cannot create this role. In AWS CloudShell,
 sign into account 809276937361, upload the single script, and run:
 
 ```sh
@@ -66,22 +68,22 @@ or Identity Center permission set in account 376778049323:
 }
 ```
 
-For CLI access, add a role profile to `~/.aws/config`, with your actual Simson
-source profile in place of `simsong`:
-
-```ini
-[profile digitalcorpora-storage-lens]
-role_arn = arn:aws:iam::809276937361:role/DigitalCorporaStorageLensReadOnly
-source_profile = simsong
-region = us-west-2
-```
-
-Then verify role assumption and configuration listing:
+The repository now has SSO and role profiles in `etc/aws-digitalcorpora-config`.
+After `direnv allow`, authenticate and verify access:
 
 ```sh
-aws sts get-caller-identity --profile digitalcorpora-storage-lens
-aws s3control list-storage-lens-configurations --account-id 809276937361 --region us-west-2 --profile digitalcorpora-storage-lens
+make aws-sso-login
+make aws-identity
+make aws-storage-lens-identity
+make aws-storage-lens-list
 ```
+
+The `digitalcorpora` SSO source profile selects `DigitalCorporaAccess` in
+account `376778049323`. The `digitalcorpora-storage-lens` role profile selects
+`DigitalCorporaStorageLensReadOnly` in account `809276937361`. `.envrc` clears
+inherited static keys and tokens and bypasses the 1Password shell wrapper.
+For direct CLI operations, use `--profile digitalcorpora-storage-lens`.
+SSO uses `us-east-1`; dashboard configuration queries default to `us-west-2`.
 
 Allow a short time for IAM propagation. CLI configuration listing alone does not
 verify dashboard metrics: open the console and inspect an enabled Advanced dashboard
@@ -94,6 +96,7 @@ by this CLI. [AWS cross-account role tutorial](https://docs.aws.amazon.com/IAM/l
 ## Verification status
 
 The role policies and Bash syntax are checked locally; the report build was rendered
-and visually inspected. No IAM changes or role assumption were performed against
-AWS while preparing this CLI. Successful live use still requires your account login,
-creation permissions, source-side AssumeRole permission, and an enabled dashboard.
+and visually inspected. No IAM changes were performed by the agent. On 9 October 2026, SSO login in
+account `376778049323` and assumption of the existing read-only role in account
+`809276937361` were verified against AWS. Dashboard metric display still requires
+console verification; role assumption alone does not verify metrics or exports.

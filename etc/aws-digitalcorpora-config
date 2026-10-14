@@ -1,0 +1,21 @@
+# Project-local AWS SSO and cross-account Storage Lens profiles.
+# digitalcorpora authenticates DigitalCorporaAccess in Simson's account.
+# digitalcorpora-storage-lens assumes the Digital Corpora read-only role.
+# SSO authentication uses us-east-1; S3 operations default to us-west-2.
+# AWS manages cached credentials outside this repository; do not put keys here.
+[profile digitalcorpora]
+region = us-west-2
+output = json
+sso_session = simsong-digitalcorpora
+sso_account_id = 376778049323
+sso_role_name = DigitalCorporaAccess
+[sso-session simsong-digitalcorpora]
+sso_start_url = https://ssoins-7223b9fb4fc9edf2.portal.us-east-1.app.aws
+sso_region = us-east-1
+sso_registration_scopes = sso:account:access
+
+[profile digitalcorpora-storage-lens]
+role_arn = arn:aws:iam::809276937361:role/DigitalCorporaStorageLensReadOnly
+source_profile = digitalcorpora
+region = us-west-2
+output = json

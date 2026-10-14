@@ -2,6 +2,7 @@ cryptography
 boto3
 python-dateutil
 pymysql
+pydantic
 boto3
 pylint
 pytest

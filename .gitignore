@@ -8,3 +8,9 @@ python/coverage.xml
 *.log
 *ini
 venv
+
+# Local credentials and working artifacts
+.DS_Store
+.tmp/
+dbreader.bash
+dbwriter.bash
